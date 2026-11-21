@@ -12,72 +12,1871 @@ generator client {
 }
 
 model User {
-  id                      String       @id @default(cuid())
-  name                    String       @default("")
-  email                   String       @unique @default("")
-  password                String
-  role                    Role?        @relation("User_role", fields: [roleId], references: [id])
-  roleId                  String?      @map("role")
-  tasks                   Todo[]       @relation("Todo_assignedTo")
-  passwordResetToken      String?
-  passwordResetIssuedAt   DateTime?
-  passwordResetRedeemedAt DateTime?
-  from_OAuthToken_user    OAuthToken[] @relation("OAuthToken_user")
+  id                                 String                @id @default(cuid())
+  name                               String                @default("")
+  email                              String                @unique @default("")
+  password                           String
+  phone                              String                @default("")
+  role                               Role?                 @relation("User_role", fields: [roleId], references: [id])
+  roleId                             String?               @map("role")
+  tutor                              Tutor?                @relation("Tutor_user")
+  family                             Family?               @relation("User_family", fields: [familyId], references: [id])
+  familyId                           String?               @map("family")
+  locationMemberships                LocationMembership[]  @relation("LocationMembership_user")
+  onboardingStatus                   String?               @default("not_started")
+  notifyByEmail                      Boolean               @default(true)
+  lastLoginAt                        DateTime?
+  createdAt                          DateTime              @default(now())
+  updatedAt                          DateTime              @default(now()) @updatedAt
+  createdBy                          User?                 @relation("User_createdBy", fields: [createdById], references: [id])
+  createdById                        String?               @map("createdBy")
+  passwordResetToken                 String?
+  passwordResetIssuedAt              DateTime?
+  passwordResetRedeemedAt            DateTime?
+  from_User_createdBy                User[]                @relation("User_createdBy")
+  from_Role_createdBy                Role[]                @relation("Role_createdBy")
+  from_Business_createdBy            Business[]            @relation("Business_createdBy")
+  from_BusinessSettings_createdBy    BusinessSettings[]    @relation("BusinessSettings_createdBy")
+  from_Location_createdBy            Location[]            @relation("Location_createdBy")
+  from_LocationMembership_createdBy  LocationMembership[]  @relation("LocationMembership_createdBy")
+  from_Room_createdBy                Room[]                @relation("Room_createdBy")
+  from_Closure_createdBy             Closure[]             @relation("Closure_createdBy")
+  from_Subject_createdBy             Subject[]             @relation("Subject_createdBy")
+  from_Level_createdBy               Level[]               @relation("Level_createdBy")
+  from_Program_createdBy             Program[]             @relation("Program_createdBy")
+  from_MembershipPlan_createdBy      MembershipPlan[]      @relation("MembershipPlan_createdBy")
+  from_Package_createdBy             Package[]             @relation("Package_createdBy")
+  from_PromoCode_createdBy           PromoCode[]           @relation("PromoCode_createdBy")
+  from_Family_createdBy              Family[]              @relation("Family_createdBy")
+  from_Student_createdBy             Student[]             @relation("Student_createdBy")
+  from_Lead_owner                    Lead[]                @relation("Lead_owner")
+  from_Lead_createdBy                Lead[]                @relation("Lead_createdBy")
+  from_Tutor_createdBy               Tutor[]               @relation("Tutor_createdBy")
+  from_TutorSubject_createdBy        TutorSubject[]        @relation("TutorSubject_createdBy")
+  from_TutorAvailability_createdBy   TutorAvailability[]   @relation("TutorAvailability_createdBy")
+  from_TutorTimeOff_createdBy        TutorTimeOff[]        @relation("TutorTimeOff_createdBy")
+  from_TutorCredential_verifiedBy    TutorCredential[]     @relation("TutorCredential_verifiedBy")
+  from_TutorCredential_createdBy     TutorCredential[]     @relation("TutorCredential_createdBy")
+  from_TutorApplication_reviewer     TutorApplication[]    @relation("TutorApplication_reviewer")
+  from_TutorApplication_createdBy    TutorApplication[]    @relation("TutorApplication_createdBy")
+  from_Assessment_assessorUser       Assessment[]          @relation("Assessment_assessorUser")
+  from_Assessment_createdBy          Assessment[]          @relation("Assessment_createdBy")
+  from_AssessmentResult_createdBy    AssessmentResult[]    @relation("AssessmentResult_createdBy")
+  from_LearningPlan_createdBy        LearningPlan[]        @relation("LearningPlan_createdBy")
+  from_PlanGoal_createdBy            PlanGoal[]            @relation("PlanGoal_createdBy")
+  from_Enrollment_createdBy          Enrollment[]          @relation("Enrollment_createdBy")
+  from_Offer_sentBy                  Offer[]               @relation("Offer_sentBy")
+  from_Offer_createdBy               Offer[]               @relation("Offer_createdBy")
+  from_SessionSeries_createdBy       SessionSeries[]       @relation("SessionSeries_createdBy")
+  from_Session_createdBy             Session[]             @relation("Session_createdBy")
+  from_Booking_markedBy              Booking[]             @relation("Booking_markedBy")
+  from_Booking_cancelledBy           Booking[]             @relation("Booking_cancelledBy")
+  from_Booking_createdBy             Booking[]             @relation("Booking_createdBy")
+  from_SessionReport_createdBy       SessionReport[]       @relation("SessionReport_createdBy")
+  from_WaitlistEntry_createdBy       WaitlistEntry[]       @relation("WaitlistEntry_createdBy")
+  from_ProgressReport_author         ProgressReport[]      @relation("ProgressReport_author")
+  from_ProgressReport_createdBy      ProgressReport[]      @relation("ProgressReport_createdBy")
+  from_Membership_createdBy          Membership[]          @relation("Membership_createdBy")
+  from_StudentPackage_createdBy      StudentPackage[]      @relation("StudentPackage_createdBy")
+  from_CreditGrant_createdBy         CreditGrant[]         @relation("CreditGrant_createdBy")
+  from_CreditEntry_actor             CreditEntry[]         @relation("CreditEntry_actor")
+  from_CreditEntry_createdBy         CreditEntry[]         @relation("CreditEntry_createdBy")
+  from_Invoice_createdBy             Invoice[]             @relation("Invoice_createdBy")
+  from_InvoiceLine_createdBy         InvoiceLine[]         @relation("InvoiceLine_createdBy")
+  from_CreditNote_issuedBy           CreditNote[]          @relation("CreditNote_issuedBy")
+  from_CreditNote_createdBy          CreditNote[]          @relation("CreditNote_createdBy")
+  from_Payment_receivedBy            Payment[]             @relation("Payment_receivedBy")
+  from_Payment_createdBy             Payment[]             @relation("Payment_createdBy")
+  from_Refund_requestedBy            Refund[]              @relation("Refund_requestedBy")
+  from_Refund_createdBy              Refund[]              @relation("Refund_createdBy")
+  from_BillingAttempt_createdBy      BillingAttempt[]      @relation("BillingAttempt_createdBy")
+  from_PayLine_createdBy             PayLine[]             @relation("PayLine_createdBy")
+  from_PayrollRun_approvedBy         PayrollRun[]          @relation("PayrollRun_approvedBy")
+  from_PayrollRun_createdBy          PayrollRun[]          @relation("PayrollRun_createdBy")
+  from_PaymentProvider_createdBy     PaymentProvider[]     @relation("PaymentProvider_createdBy")
+  from_PaymentSession_createdBy      PaymentSession[]      @relation("PaymentSession_createdBy")
+  from_PaymentWebhookEvent_createdBy PaymentWebhookEvent[] @relation("PaymentWebhookEvent_createdBy")
+  from_Task_owner                    Task[]                @relation("Task_owner")
+  from_Task_completedBy              Task[]                @relation("Task_completedBy")
+  from_Task_createdBy                Task[]                @relation("Task_createdBy")
+  from_Message_sender                Message[]             @relation("Message_sender")
+  from_Message_createdBy             Message[]             @relation("Message_createdBy")
+  from_NotificationLog_createdBy     NotificationLog[]     @relation("NotificationLog_createdBy")
+  from_Review_recordedBy             Review[]              @relation("Review_recordedBy")
+  from_Review_createdBy              Review[]              @relation("Review_createdBy")
+  from_ChangeEvent_actor             ChangeEvent[]         @relation("ChangeEvent_actor")
+  from_ChangeEvent_createdBy         ChangeEvent[]         @relation("ChangeEvent_createdBy")
+  from_CommandReceipt_createdBy      CommandReceipt[]      @relation("CommandReceipt_createdBy")
+  from_OAuthApp_createdBy            OAuthApp[]            @relation("OAuthApp_createdBy")
+  from_OAuthToken_user               OAuthToken[]          @relation("OAuthToken_user")
+  from_OAuthToken_createdBy          OAuthToken[]          @relation("OAuthToken_createdBy")
 
   @@index([roleId])
+  @@index([familyId])
+  @@index([createdById])
 }
 
 model Role {
-  id                 String  @id @default(cuid())
-  name               String  @default("")
-  canCreateTodos     Boolean @default(false)
-  canManageAllTodos  Boolean @default(false)
-  canSeeOtherPeople  Boolean @default(false)
-  canEditOtherPeople Boolean @default(false)
-  canManagePeople    Boolean @default(false)
-  canManageRoles     Boolean @default(false)
-  canAccessDashboard Boolean @default(false)
-  assignedTo         User[]  @relation("User_role")
+  id                 String   @id @default(cuid())
+  name               String   @unique @default("")
+  canAccessDashboard Boolean  @default(false)
+  canManageSettings  Boolean  @default(false)
+  canManageStaff     Boolean  @default(false)
+  canManageLocations Boolean  @default(false)
+  canManagePrograms  Boolean  @default(false)
+  canManageLeads     Boolean  @default(false)
+  canManageFamilies  Boolean  @default(false)
+  canManageSchedule  Boolean  @default(false)
+  canMarkAttendance  Boolean  @default(false)
+  canManageBilling   Boolean  @default(false)
+  canIssueRefunds    Boolean  @default(false)
+  canManagePayroll   Boolean  @default(false)
+  canViewReports     Boolean  @default(false)
+  canManageTutors    Boolean  @default(false)
+  isTutor            Boolean  @default(false)
+  canSeeOtherPeople  Boolean  @default(false)
+  canEditOtherPeople Boolean  @default(false)
+  canManagePeople    Boolean  @default(false)
+  canManageRoles     Boolean  @default(false)
+  assignedTo         User[]   @relation("User_role")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @default(now()) @updatedAt
+  createdBy          User?    @relation("Role_createdBy", fields: [createdById], references: [id])
+  createdById        String?  @map("createdBy")
+
+  @@index([createdById])
 }
 
-model Todo {
-  id                   String      @id @default(cuid())
-  label                String      @default("")
-  description          Json        @default("[{\"type\":\"paragraph\",\"children\":[{\"text\":\"\"}]}]")
-  isComplete           Boolean     @default(false)
-  status               String?     @default("todo")
-  priority             Int?        @default(1)
-  tags                 Json        @default("[]")
-  dueDate              DateTime?
-  weight               Float?      @default(1)
-  budget               Decimal?    @default("0.00") @postgresql.Decimal(10, 2)
-  isPrivate            Boolean     @default(false)
-  largeNumber          BigInt?
-  metadata             Json?
-  secretNote           String?
-  coverImage_id        String?
-  coverImage_filesize  Int?
-  coverImage_width     Int?
-  coverImage_height    Int?
-  coverImage_extension String?
-  todoImages           TodoImage[] @relation("Todo_todoImages")
-  assignedTo           User?       @relation("Todo_assignedTo", fields: [assignedToId], references: [id])
-  assignedToId         String?     @map("assignedTo")
+model Business {
+  id                Int       @id
+  name              String    @default("")
+  legalName         String    @default("")
+  logo_id           String?
+  logo_filesize     Int?
+  logo_width        Int?
+  logo_height       Int?
+  logo_extension    String?
+  currency          String    @default("USD")
+  country           String    @default("US")
+  supportEmail      String    @default("")
+  careersEmail      String    @default("")
+  phone             String    @default("")
+  brandPrimary      String    @default("#1f5f8b")
+  brandAccent       String    @default("#f2a541")
+  about             String    @default("")
+  socialLinks       Json?     @default("{}")
+  kind              String    @default("centre")
+  nextInvoiceNumber Int?      @default(1001)
+  onboardedAt       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @default(now()) @updatedAt
+  createdBy         User?     @relation("Business_createdBy", fields: [createdById], references: [id])
+  createdById       String?   @map("createdBy")
 
-  @@index([assignedToId])
+  @@index([createdById])
 }
 
-model TodoImage {
-  id              String  @id @default(cuid())
-  image_id        String?
-  image_filesize  Int?
-  image_width     Int?
-  image_height    Int?
-  image_extension String?
-  imagePath       String  @default("")
-  altText         String  @default("")
-  todos           Todo[]  @relation("Todo_todoImages")
-  metadata        Json?
+model BusinessSettings {
+  id                            Int       @id
+  cancellationWindowHours       Int       @default(24)
+  lateCancelCharged             Boolean   @default(true)
+  noShowCharged                 Boolean   @default(true)
+  excusedAbsencesPerMonth       Int       @default(1)
+  makeUpExpiryDays              Int       @default(60)
+  membershipRolloverPeriods     Int       @default(1)
+  membershipCancelNoticeDays    Int       @default(30)
+  pauseMinDays                  Int       @default(14)
+  pauseMaxDays                  Int       @default(28)
+  pausesPerYear                 Int       @default(1)
+  pastDueRetryDays              Json?     @default("[3,7]")
+  suspendAfterDays              Int       @default(10)
+  siblingDiscountPercent        Int       @default(10)
+  offerExpiryHours              Int       @default(24)
+  freeRematches                 Int       @default(1)
+  trialChargedOnRematch         Boolean   @default(false)
+  tutorPaidOnLateCancelPercent  Int       @default(100)
+  tutorPaidOnNoShowPercent      Int       @default(100)
+  payrollPeriodDays             Int       @default(14)
+  progressReportEverySessions   Int       @default(12)
+  progressReportEveryWeeks      Int       @default(4)
+  reassessEveryWeeks            Int       @default(12)
+  lowBalanceMinutes             Int       @default(120)
+  bookingHorizonDays            Int       @default(42)
+  attendanceEditWindowHours     Int       @default(48)
+  assessmentCancelRefundHours   Int       @default(24)
+  assessmentFeeKeptOnLateCancel Boolean   @default(true)
+  enrolmentFeeWaivedWithinDays  Int       @default(90)
+  frontDeskRefundLimit          Int       @default(0)
+  reopenWindowDays              Int       @default(14)
+  policiesText                  String    @default("")
+  jobsSecretHash                String    @default("")
+  lastDailyJobsAt               DateTime?
+  createdAt                     DateTime  @default(now())
+  updatedAt                     DateTime  @default(now()) @updatedAt
+  createdBy                     User?     @relation("BusinessSettings_createdBy", fields: [createdById], references: [id])
+  createdById                   String?   @map("createdBy")
+
+  @@index([createdById])
+}
+
+model Location {
+  id                              String               @id @default(cuid())
+  name                            String               @default("")
+  slug                            String               @unique @default("")
+  addressLine1                    String               @default("")
+  addressLine2                    String               @default("")
+  city                            String               @default("")
+  region                          String               @default("")
+  postalCode                      String               @default("")
+  country                         String               @default("US")
+  lat                             Float?
+  lng                             Float?
+  phone                           String               @default("")
+  email                           String               @default("")
+  timezone                        String               @default("America/New_York")
+  openingHours                    Json?                @default("{}")
+  taxRatePercent                  Decimal?             @default("0") @postgresql.Decimal(6, 3)
+  photo_id                        String?
+  photo_filesize                  Int?
+  photo_width                     Int?
+  photo_height                    Int?
+  photo_extension                 String?
+  description                     String               @default("")
+  status                          String               @default("active")
+  rooms                           Room[]               @relation("Room_location")
+  closures                        Closure[]            @relation("Closure_location")
+  memberships                     LocationMembership[] @relation("LocationMembership_location")
+  programs                        Program[]            @relation("Location_programs")
+  tutors                          Tutor[]              @relation("Location_tutors")
+  createdAt                       DateTime             @default(now())
+  updatedAt                       DateTime             @default(now()) @updatedAt
+  createdBy                       User?                @relation("Location_createdBy", fields: [createdById], references: [id])
+  createdById                     String?              @map("createdBy")
+  from_Family_primaryLocation     Family[]             @relation("Family_primaryLocation")
+  from_Lead_location              Lead[]               @relation("Lead_location")
+  from_Tutor_homeLocation         Tutor[]              @relation("Tutor_homeLocation")
+  from_TutorAvailability_location TutorAvailability[]  @relation("TutorAvailability_location")
+  from_Assessment_location        Assessment[]         @relation("Assessment_location")
+  from_Enrollment_location        Enrollment[]         @relation("Enrollment_location")
+  from_SessionSeries_location     SessionSeries[]      @relation("SessionSeries_location")
+  from_Session_location           Session[]            @relation("Session_location")
+  from_Invoice_location           Invoice[]            @relation("Invoice_location")
+  from_PayrollRun_location        PayrollRun[]         @relation("PayrollRun_location")
+  from_Task_location              Task[]               @relation("Task_location")
+  from_Review_location            Review[]             @relation("Review_location")
+  from_CommandReceipt_location    CommandReceipt[]     @relation("CommandReceipt_location")
+
+  @@index([status])
+  @@index([createdById])
+}
+
+model LocationMembership {
+  id          String    @id @default(cuid())
+  user        User?     @relation("LocationMembership_user", fields: [userId], references: [id])
+  userId      String?   @map("user")
+  location    Location? @relation("LocationMembership_location", fields: [locationId], references: [id])
+  locationId  String?   @map("location")
+  role        String    @default("front_desk")
+  status      String    @default("active")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @default(now()) @updatedAt
+  createdBy   User?     @relation("LocationMembership_createdBy", fields: [createdById], references: [id])
+  createdById String?   @map("createdBy")
+
+  @@unique([userId, locationId])
+  @@index([userId])
+  @@index([locationId])
+  @@index([createdById])
+}
+
+model Room {
+  id                      String          @id @default(cuid())
+  location                Location?       @relation("Room_location", fields: [locationId], references: [id])
+  locationId              String?         @map("location")
+  name                    String          @default("")
+  capacity                Int             @default(4)
+  kind                    String          @default("room")
+  status                  String          @default("active")
+  createdAt               DateTime        @default(now())
+  updatedAt               DateTime        @default(now()) @updatedAt
+  createdBy               User?           @relation("Room_createdBy", fields: [createdById], references: [id])
+  createdById             String?         @map("createdBy")
+  from_Assessment_room    Assessment[]    @relation("Assessment_room")
+  from_SessionSeries_room SessionSeries[] @relation("SessionSeries_room")
+  from_Session_room       Session[]       @relation("Session_room")
+
+  @@index([locationId])
+  @@index([createdById])
+}
+
+model Closure {
+  id          String    @id @default(cuid())
+  location    Location? @relation("Closure_location", fields: [locationId], references: [id])
+  locationId  String?   @map("location")
+  startsOn    DateTime
+  endsOn      DateTime
+  reason      String    @default("")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @default(now()) @updatedAt
+  createdBy   User?     @relation("Closure_createdBy", fields: [createdById], references: [id])
+  createdById String?   @map("createdBy")
+
+  @@index([locationId])
+  @@index([createdById])
+}
+
+model Subject {
+  id                             String             @id @default(cuid())
+  name                           String             @default("")
+  slug                           String             @unique @default("")
+  category                       String             @default("other")
+  description                    String             @default("")
+  icon                           String             @default("")
+  sortOrder                      Int?               @default(0)
+  programs                       Program[]          @relation("Program_subjects")
+  createdAt                      DateTime           @default(now())
+  updatedAt                      DateTime           @default(now()) @updatedAt
+  createdBy                      User?              @relation("Subject_createdBy", fields: [createdById], references: [id])
+  createdById                    String?            @map("createdBy")
+  from_Lead_subjects             Lead[]             @relation("Lead_subjects")
+  from_TutorSubject_subject      TutorSubject[]     @relation("TutorSubject_subject")
+  from_TutorApplication_subjects TutorApplication[] @relation("TutorApplication_subjects")
+  from_Assessment_subject        Assessment[]       @relation("Assessment_subject")
+  from_LearningPlan_subject      LearningPlan[]     @relation("LearningPlan_subject")
+  from_SessionSeries_subject     SessionSeries[]    @relation("SessionSeries_subject")
+  from_Session_subject           Session[]          @relation("Session_subject")
+
+  @@index([createdById])
+}
+
+model Level {
+  id                          String         @id @default(cuid())
+  name                        String         @unique @default("")
+  sortOrder                   Int            @default(0)
+  kind                        String         @default("grade")
+  createdAt                   DateTime       @default(now())
+  updatedAt                   DateTime       @default(now()) @updatedAt
+  createdBy                   User?          @relation("Level_createdBy", fields: [createdById], references: [id])
+  createdById                 String?        @map("createdBy")
+  from_Program_levelsFrom     Program[]      @relation("Program_levelsFrom")
+  from_Program_levelsTo       Program[]      @relation("Program_levelsTo")
+  from_Student_level          Student[]      @relation("Student_level")
+  from_Lead_level             Lead[]         @relation("Lead_level")
+  from_TutorSubject_levelFrom TutorSubject[] @relation("TutorSubject_levelFrom")
+  from_TutorSubject_levelTo   TutorSubject[] @relation("TutorSubject_levelTo")
+
+  @@index([createdById])
+}
+
+model Program {
+  id                         String           @id @default(cuid())
+  name                       String           @default("")
+  slug                       String           @unique @default("")
+  summary                    String           @default("")
+  description                Json             @default("[{\"type\":\"paragraph\",\"children\":[{\"text\":\"\"}]}]")
+  image_id                   String?
+  image_filesize             Int?
+  image_width                Int?
+  image_height               Int?
+  image_extension            String?
+  subjects                   Subject[]        @relation("Program_subjects")
+  levelsFrom                 Level?           @relation("Program_levelsFrom", fields: [levelsFromId], references: [id])
+  levelsFromId               String?          @map("levelsFrom")
+  levelsTo                   Level?           @relation("Program_levelsTo", fields: [levelsToId], references: [id])
+  levelsToId                 String?          @map("levelsTo")
+  deliveryModes              Json             @default("[\"in_centre\"]")
+  format                     String           @default("small_group")
+  maxStudentsPerSession      Int              @default(4)
+  sessionMinutes             Int              @default(60)
+  billingModel               String           @default("managed")
+  requiresAssessment         Boolean          @default(true)
+  assessmentFee              Int              @default(0)
+  assessmentMinutes          Int              @default(45)
+  allowsTrial                Boolean          @default(false)
+  placementFee               Int              @default(0)
+  payAsYouGoPrice            Int              @default(0)
+  locations                  Location[]       @relation("Location_programs")
+  status                     String           @default("draft")
+  featured                   Boolean          @default(false)
+  outcomes                   String           @default("")
+  faq                        Json?            @default("[]")
+  plans                      MembershipPlan[] @relation("MembershipPlan_program")
+  packages                   Package[]        @relation("Package_program")
+  createdAt                  DateTime         @default(now())
+  updatedAt                  DateTime         @default(now()) @updatedAt
+  createdBy                  User?            @relation("Program_createdBy", fields: [createdById], references: [id])
+  createdById                String?          @map("createdBy")
+  from_Lead_program          Lead[]           @relation("Lead_program")
+  from_Assessment_program    Assessment[]     @relation("Assessment_program")
+  from_LearningPlan_program  LearningPlan[]   @relation("LearningPlan_program")
+  from_Enrollment_program    Enrollment[]     @relation("Enrollment_program")
+  from_SessionSeries_program SessionSeries[]  @relation("SessionSeries_program")
+  from_Session_program       Session[]        @relation("Session_program")
+  from_CreditGrant_program   CreditGrant[]    @relation("CreditGrant_program")
+  from_InvoiceLine_program   InvoiceLine[]    @relation("InvoiceLine_program")
+  from_Review_program        Review[]         @relation("Review_program")
+
+  @@index([levelsFromId])
+  @@index([levelsToId])
+  @@index([status])
+  @@index([createdById])
+}
+
+model MembershipPlan {
+  id                                String         @id @default(cuid())
+  name                              String         @default("")
+  program                           Program?       @relation("MembershipPlan_program", fields: [programId], references: [id])
+  programId                         String?        @map("program")
+  sessionsPerPeriod                 Int?
+  weeklyCapForUnlimited             Int?           @default(5)
+  price                             Int            @default(0)
+  enrolmentFee                      Int            @default(0)
+  minimumTermMonths                 Int            @default(0)
+  description                       String         @default("")
+  features                          Json?          @default("[]")
+  status                            String         @default("published")
+  sortOrder                         Int?           @default(0)
+  highlight                         Boolean        @default(false)
+  createdAt                         DateTime       @default(now())
+  updatedAt                         DateTime       @default(now()) @updatedAt
+  createdBy                         User?          @relation("MembershipPlan_createdBy", fields: [createdById], references: [id])
+  createdById                       String?        @map("createdBy")
+  from_Assessment_recommendedPlan   Assessment[]   @relation("Assessment_recommendedPlan")
+  from_LearningPlan_recommendedPlan LearningPlan[] @relation("LearningPlan_recommendedPlan")
+  from_Membership_plan              Membership[]   @relation("Membership_plan")
+  from_Membership_pendingPlan       Membership[]   @relation("Membership_pendingPlan")
+
+  @@index([programId])
+  @@index([status])
+  @@index([createdById])
+}
+
+model Package {
+  id                                   String           @id @default(cuid())
+  name                                 String           @default("")
+  program                              Program?         @relation("Package_program", fields: [programId], references: [id])
+  programId                            String?          @map("program")
+  hours                                Int              @default(10)
+  price                                Int              @default(0)
+  expiryMonths                         Int              @default(6)
+  description                          String           @default("")
+  status                               String           @default("published")
+  sortOrder                            Int?             @default(0)
+  createdAt                            DateTime         @default(now())
+  updatedAt                            DateTime         @default(now()) @updatedAt
+  createdBy                            User?            @relation("Package_createdBy", fields: [createdById], references: [id])
+  createdById                          String?          @map("createdBy")
+  from_Assessment_recommendedPackage   Assessment[]     @relation("Assessment_recommendedPackage")
+  from_LearningPlan_recommendedPackage LearningPlan[]   @relation("LearningPlan_recommendedPackage")
+  from_StudentPackage_package          StudentPackage[] @relation("StudentPackage_package")
+
+  @@index([programId])
+  @@index([status])
+  @@index([createdById])
+}
+
+model PromoCode {
+  id                     String    @id @default(cuid())
+  code                   String    @unique @default("")
+  percentOff             Int?
+  amountOff              Int?
+  appliesTo              String    @default("any")
+  validFrom              DateTime?
+  validTo                DateTime?
+  maxUses                Int?
+  uses                   Int?      @default(0)
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @default(now()) @updatedAt
+  createdBy              User?     @relation("PromoCode_createdBy", fields: [createdById], references: [id])
+  createdById            String?   @map("createdBy")
+  from_Invoice_promoCode Invoice[] @relation("Invoice_promoCode")
+
+  @@index([createdById])
+}
+
+model Family {
+  id                         String           @id @default(cuid())
+  name                       String           @default("")
+  guardians                  User[]           @relation("User_family")
+  students                   Student[]        @relation("Student_family")
+  primaryLocation            Location?        @relation("Family_primaryLocation", fields: [primaryLocationId], references: [id])
+  primaryLocationId          String?          @map("primaryLocation")
+  billingEmail               String           @default("")
+  phone                      String           @default("")
+  addressLine1               String           @default("")
+  addressLine2               String           @default("")
+  city                       String           @default("")
+  region                     String           @default("")
+  postalCode                 String           @default("")
+  country                    String           @default("")
+  stripeCustomerId           String           @default("")
+  defaultPaymentMethodId     String           @default("")
+  defaultPaymentMethodLabel  String           @default("")
+  payAsYouGoAllowed          Boolean          @default(false)
+  notes                      String           @default("")
+  secondGuardianName         String           @default("")
+  secondGuardianEmail        String           @default("")
+  secondGuardianPhone        String           @default("")
+  status                     String           @default("active")
+  sourceLead                 Lead?            @relation("Family_sourceLead", fields: [sourceLeadId], references: [id])
+  sourceLeadId               String?          @unique @map("sourceLead")
+  leads                      Lead[]           @relation("Lead_family")
+  enrolments                 Enrollment[]     @relation("Enrollment_family")
+  memberships                Membership[]     @relation("Membership_family")
+  invoices                   Invoice[]        @relation("Invoice_family")
+  creditGrants               CreditGrant[]    @relation("CreditGrant_family")
+  messages                   Message[]        @relation("Message_family")
+  reviews                    Review[]         @relation("Review_family")
+  tasks                      Task[]           @relation("Task_family")
+  createdAt                  DateTime         @default(now())
+  updatedAt                  DateTime         @default(now()) @updatedAt
+  createdBy                  User?            @relation("Family_createdBy", fields: [createdById], references: [id])
+  createdById                String?          @map("createdBy")
+  from_Assessment_family     Assessment[]     @relation("Assessment_family")
+  from_Booking_family        Booking[]        @relation("Booking_family")
+  from_WaitlistEntry_family  WaitlistEntry[]  @relation("WaitlistEntry_family")
+  from_StudentPackage_family StudentPackage[] @relation("StudentPackage_family")
+  from_Payment_family        Payment[]        @relation("Payment_family")
+  from_PaymentSession_family PaymentSession[] @relation("PaymentSession_family")
+
+  @@index([primaryLocationId])
+  @@index([billingEmail])
+  @@index([createdById])
+}
+
+model Student {
+  id                          String           @id @default(cuid())
+  family                      Family?          @relation("Student_family", fields: [familyId], references: [id])
+  familyId                    String?          @map("family")
+  firstName                   String           @default("")
+  lastName                    String           @default("")
+  dateOfBirth                 DateTime?
+  level                       Level?           @relation("Student_level", fields: [levelId], references: [id])
+  levelId                     String?          @map("level")
+  school                      String           @default("")
+  photo_id                    String?
+  photo_filesize              Int?
+  photo_width                 Int?
+  photo_height                Int?
+  photo_extension             String?
+  learningNotes               String           @default("")
+  medicalNotes                String           @default("")
+  pickupPeople                Json?            @default("[]")
+  status                      String           @default("prospect")
+  enrolments                  Enrollment[]     @relation("Enrollment_student")
+  assessments                 Assessment[]     @relation("Assessment_student")
+  plans                       LearningPlan[]   @relation("LearningPlan_student")
+  bookings                    Booking[]        @relation("Booking_student")
+  createdAt                   DateTime         @default(now())
+  updatedAt                   DateTime         @default(now()) @updatedAt
+  createdBy                   User?            @relation("Student_createdBy", fields: [createdById], references: [id])
+  createdById                 String?          @map("createdBy")
+  from_Lead_student           Lead[]           @relation("Lead_student")
+  from_SessionReport_student  SessionReport[]  @relation("SessionReport_student")
+  from_WaitlistEntry_student  WaitlistEntry[]  @relation("WaitlistEntry_student")
+  from_ProgressReport_student ProgressReport[] @relation("ProgressReport_student")
+  from_Membership_student     Membership[]     @relation("Membership_student")
+  from_StudentPackage_student StudentPackage[] @relation("StudentPackage_student")
+  from_CreditGrant_student    CreditGrant[]    @relation("CreditGrant_student")
+  from_InvoiceLine_student    InvoiceLine[]    @relation("InvoiceLine_student")
+  from_Task_student           Task[]           @relation("Task_student")
+
+  @@index([familyId])
+  @@index([levelId])
+  @@index([status])
+  @@index([createdById])
+}
+
+model Lead {
+  id              String       @id @default(cuid())
+  guardianName    String       @default("")
+  email           String       @default("")
+  phone           String       @default("")
+  studentName     String       @default("")
+  level           Level?       @relation("Lead_level", fields: [levelId], references: [id])
+  levelId         String?      @map("level")
+  subjects        Subject[]    @relation("Lead_subjects")
+  program         Program?     @relation("Lead_program", fields: [programId], references: [id])
+  programId       String?      @map("program")
+  location        Location?    @relation("Lead_location", fields: [locationId], references: [id])
+  locationId      String?      @map("location")
+  preferredMode   String?
+  preferredTimes  String       @default("")
+  area            String       @default("")
+  intent          String       @default("enquiry")
+  message         String       @default("")
+  source          String       @default("website")
+  status          String       @default("new")
+  lostReason      String       @default("")
+  owner           User?        @relation("Lead_owner", fields: [ownerId], references: [id])
+  ownerId         String?      @map("owner")
+  family          Family?      @relation("Lead_family", fields: [familyId], references: [id])
+  familyId        String?      @map("family")
+  convertedFamily Family?      @relation("Family_sourceLead")
+  student         Student?     @relation("Lead_student", fields: [studentId], references: [id])
+  studentId       String?      @map("student")
+  nextFollowUpAt  DateTime?
+  lastContactedAt DateTime?
+  assessments     Assessment[] @relation("Assessment_lead")
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @default(now()) @updatedAt
+  createdBy       User?        @relation("Lead_createdBy", fields: [createdById], references: [id])
+  createdById     String?      @map("createdBy")
+  from_Task_lead  Task[]       @relation("Task_lead")
+
+  @@index([email])
+  @@index([levelId])
+  @@index([programId])
+  @@index([locationId])
+  @@index([status])
+  @@index([ownerId])
+  @@index([familyId])
+  @@index([studentId])
+  @@index([createdById])
+}
+
+model Tutor {
+  id                              String              @id @default(cuid())
+  user                            User?               @relation("Tutor_user", fields: [userId], references: [id])
+  userId                          String?             @unique @map("user")
+  displayName                     String              @default("")
+  slug                            String              @unique @default("")
+  photo_id                        String?
+  photo_filesize                  Int?
+  photo_width                     Int?
+  photo_height                    Int?
+  photo_extension                 String?
+  photoUrl                        String              @default("")
+  headline                        String              @default("")
+  bio                             String              @default("")
+  education                       String              @default("")
+  yearsExperience                 Int?                @default(0)
+  employmentType                  String              @default("contractor")
+  deliveryModes                   Json                @default("[\"in_centre\"]")
+  travelAreas                     String              @default("")
+  travelRadiusKm                  Int?
+  homeLocation                    Location?           @relation("Tutor_homeLocation", fields: [homeLocationId], references: [id])
+  homeLocationId                  String?             @map("homeLocation")
+  locations                       Location[]          @relation("Location_tutors")
+  defaultPayRate                  Int                 @default(0)
+  meetingUrl                      String              @default("")
+  status                          String              @default("onboarding")
+  publicProfile                   Boolean             @default(false)
+  subjects                        TutorSubject[]      @relation("TutorSubject_tutor")
+  availability                    TutorAvailability[] @relation("TutorAvailability_tutor")
+  timeOff                         TutorTimeOff[]      @relation("TutorTimeOff_tutor")
+  credentials                     TutorCredential[]   @relation("TutorCredential_tutor")
+  application                     TutorApplication?   @relation("Tutor_application", fields: [applicationId], references: [id])
+  applicationId                   String?             @unique @map("application")
+  createdAt                       DateTime            @default(now())
+  updatedAt                       DateTime            @default(now()) @updatedAt
+  createdBy                       User?               @relation("Tutor_createdBy", fields: [createdById], references: [id])
+  createdById                     String?             @map("createdBy")
+  from_Assessment_assessor        Assessment[]        @relation("Assessment_assessor")
+  from_Enrollment_tutor           Enrollment[]        @relation("Enrollment_tutor")
+  from_Offer_tutor                Offer[]             @relation("Offer_tutor")
+  from_SessionSeries_tutor        SessionSeries[]     @relation("SessionSeries_tutor")
+  from_Session_tutor              Session[]           @relation("Session_tutor")
+  from_Session_substituteFor      Session[]           @relation("Session_substituteFor")
+  from_SessionReport_tutor        SessionReport[]     @relation("SessionReport_tutor")
+  from_ProgressReport_authorTutor ProgressReport[]    @relation("ProgressReport_authorTutor")
+  from_PayLine_tutor              PayLine[]           @relation("PayLine_tutor")
+  from_Review_tutor               Review[]            @relation("Review_tutor")
+
+  @@index([homeLocationId])
+  @@index([status])
+  @@index([createdById])
+}
+
+model TutorSubject {
+  id          String   @id @default(cuid())
+  tutor       Tutor?   @relation("TutorSubject_tutor", fields: [tutorId], references: [id])
+  tutorId     String?  @map("tutor")
+  subject     Subject? @relation("TutorSubject_subject", fields: [subjectId], references: [id])
+  subjectId   String?  @map("subject")
+  levelFrom   Level?   @relation("TutorSubject_levelFrom", fields: [levelFromId], references: [id])
+  levelFromId String?  @map("levelFrom")
+  levelTo     Level?   @relation("TutorSubject_levelTo", fields: [levelToId], references: [id])
+  levelToId   String?  @map("levelTo")
+  payRate     Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
+  createdBy   User?    @relation("TutorSubject_createdBy", fields: [createdById], references: [id])
+  createdById String?  @map("createdBy")
+
+  @@unique([tutorId, subjectId])
+  @@index([tutorId])
+  @@index([subjectId])
+  @@index([levelFromId])
+  @@index([levelToId])
+  @@index([createdById])
+}
+
+model TutorAvailability {
+  id            String    @id @default(cuid())
+  tutor         Tutor?    @relation("TutorAvailability_tutor", fields: [tutorId], references: [id])
+  tutorId       String?   @map("tutor")
+  weekday       Int       @default(1)
+  startMinute   Int       @default(900)
+  endMinute     Int       @default(1200)
+  mode          String    @default("in_centre")
+  location      Location? @relation("TutorAvailability_location", fields: [locationId], references: [id])
+  locationId    String?   @map("location")
+  effectiveFrom DateTime?
+  effectiveTo   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @default(now()) @updatedAt
+  createdBy     User?     @relation("TutorAvailability_createdBy", fields: [createdById], references: [id])
+  createdById   String?   @map("createdBy")
+
+  @@index([tutorId])
+  @@index([locationId])
+  @@index([createdById])
+}
+
+model TutorTimeOff {
+  id          String   @id @default(cuid())
+  tutor       Tutor?   @relation("TutorTimeOff_tutor", fields: [tutorId], references: [id])
+  tutorId     String?  @map("tutor")
+  startsAt    DateTime
+  endsAt      DateTime
+  reason      String   @default("")
+  status      String   @default("requested")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
+  createdBy   User?    @relation("TutorTimeOff_createdBy", fields: [createdById], references: [id])
+  createdById String?  @map("createdBy")
+
+  @@index([tutorId])
+  @@index([status])
+  @@index([createdById])
+}
+
+model TutorCredential {
+  id                String    @id @default(cuid())
+  tutor             Tutor?    @relation("TutorCredential_tutor", fields: [tutorId], references: [id])
+  tutorId           String?   @map("tutor")
+  kind              String    @default("background_check")
+  document_filesize Int?
+  document_filename String?
+  reference         String    @default("")
+  issuedAt          DateTime?
+  expiresAt         DateTime?
+  status            String    @default("pending")
+  verifiedBy        User?     @relation("TutorCredential_verifiedBy", fields: [verifiedById], references: [id])
+  verifiedById      String?   @map("verifiedBy")
+  verifiedAt        DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @default(now()) @updatedAt
+  createdBy         User?     @relation("TutorCredential_createdBy", fields: [createdById], references: [id])
+  createdById       String?   @map("createdBy")
+
+  @@index([tutorId])
+  @@index([status])
+  @@index([verifiedById])
+  @@index([createdById])
+}
+
+model TutorApplication {
+  id           String    @id @default(cuid())
+  name         String    @default("")
+  email        String    @default("")
+  phone        String    @default("")
+  subjectsText String    @default("")
+  subjects     Subject[] @relation("TutorApplication_subjects")
+  levels       String    @default("")
+  modes        Json      @default("[]")
+  areas        String    @default("")
+  availability Json?     @default("{}")
+  cv_filesize  Int?
+  cv_filename  String?
+  references   Json?     @default("[]")
+  coverNote    String    @default("")
+  source       String    @default("email")
+  status       String    @default("applied")
+  reviewer     User?     @relation("TutorApplication_reviewer", fields: [reviewerId], references: [id])
+  reviewerId   String?   @map("reviewer")
+  notes        String    @default("")
+  tutor        Tutor?    @relation("Tutor_application")
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @default(now()) @updatedAt
+  createdBy    User?     @relation("TutorApplication_createdBy", fields: [createdById], references: [id])
+  createdById  String?   @map("createdBy")
+
+  @@index([email])
+  @@index([status])
+  @@index([reviewerId])
+  @@index([createdById])
+}
+
+model Assessment {
+  id                                   String             @id @default(cuid())
+  student                              Student?           @relation("Assessment_student", fields: [studentId], references: [id])
+  studentId                            String?            @map("student")
+  family                               Family?            @relation("Assessment_family", fields: [familyId], references: [id])
+  familyId                             String?            @map("family")
+  program                              Program?           @relation("Assessment_program", fields: [programId], references: [id])
+  programId                            String?            @map("program")
+  subject                              Subject?           @relation("Assessment_subject", fields: [subjectId], references: [id])
+  subjectId                            String?            @map("subject")
+  location                             Location?          @relation("Assessment_location", fields: [locationId], references: [id])
+  locationId                           String?            @map("location")
+  room                                 Room?              @relation("Assessment_room", fields: [roomId], references: [id])
+  roomId                               String?            @map("room")
+  assessor                             Tutor?             @relation("Assessment_assessor", fields: [assessorId], references: [id])
+  assessorId                           String?            @map("assessor")
+  assessorUser                         User?              @relation("Assessment_assessorUser", fields: [assessorUserId], references: [id])
+  assessorUserId                       String?            @map("assessorUser")
+  mode                                 String             @default("in_centre")
+  kind                                 String             @default("initial")
+  scheduledAt                          DateTime?
+  minutes                              Int                @default(45)
+  status                               String             @default("requested")
+  slotKey                              String?            @unique
+  fee                                  Int                @default(0)
+  feeRefunded                          Boolean            @default(false)
+  invoice                              Invoice?           @relation("Assessment_invoice", fields: [invoiceId], references: [id])
+  invoiceId                            String?            @map("invoice")
+  summary                              String             @default("")
+  recommendation                       String             @default("")
+  recommendedPlan                      MembershipPlan?    @relation("Assessment_recommendedPlan", fields: [recommendedPlanId], references: [id])
+  recommendedPlanId                    String?            @map("recommendedPlan")
+  recommendedPackage                   Package?           @relation("Assessment_recommendedPackage", fields: [recommendedPackageId], references: [id])
+  recommendedPackageId                 String?            @map("recommendedPackage")
+  recommendedSessionsPerWeek           Int?
+  results                              AssessmentResult[] @relation("AssessmentResult_assessment")
+  lead                                 Lead?              @relation("Assessment_lead", fields: [leadId], references: [id])
+  leadId                               String?            @map("lead")
+  cancelReason                         String             @default("")
+  completedAt                          DateTime?
+  rescheduledFrom                      Assessment?        @relation("Assessment_rescheduledFrom", fields: [rescheduledFromId], references: [id])
+  rescheduledFromId                    String?            @map("rescheduledFrom")
+  createdAt                            DateTime           @default(now())
+  updatedAt                            DateTime           @default(now()) @updatedAt
+  createdBy                            User?              @relation("Assessment_createdBy", fields: [createdById], references: [id])
+  createdById                          String?            @map("createdBy")
+  from_Assessment_rescheduledFrom      Assessment[]       @relation("Assessment_rescheduledFrom")
+  from_LearningPlan_baselineAssessment LearningPlan[]     @relation("LearningPlan_baselineAssessment")
+  from_InvoiceLine_assessment          InvoiceLine[]      @relation("InvoiceLine_assessment")
+
+  @@index([studentId])
+  @@index([familyId])
+  @@index([programId])
+  @@index([subjectId])
+  @@index([locationId])
+  @@index([roomId])
+  @@index([assessorId])
+  @@index([assessorUserId])
+  @@index([scheduledAt])
+  @@index([status])
+  @@index([invoiceId])
+  @@index([recommendedPlanId])
+  @@index([recommendedPackageId])
+  @@index([leadId])
+  @@index([rescheduledFromId])
+  @@index([createdById])
+  @@index([assessorId, scheduledAt])
+  @@index([roomId, scheduledAt])
+}
+
+model AssessmentResult {
+  id              String      @id @default(cuid())
+  assessment      Assessment? @relation("AssessmentResult_assessment", fields: [assessmentId], references: [id])
+  assessmentId    String?     @map("assessment")
+  skill           String      @default("")
+  strand          String      @default("")
+  score           Float       @default(0)
+  maxScore        Float       @default(10)
+  levelEquivalent String      @default("")
+  note            String      @default("")
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @default(now()) @updatedAt
+  createdBy       User?       @relation("AssessmentResult_createdBy", fields: [createdById], references: [id])
+  createdById     String?     @map("createdBy")
+
+  @@index([assessmentId])
+  @@index([createdById])
+}
+
+model LearningPlan {
+  id                                String          @id @default(cuid())
+  student                           Student?        @relation("LearningPlan_student", fields: [studentId], references: [id])
+  studentId                         String?         @map("student")
+  subject                           Subject?        @relation("LearningPlan_subject", fields: [subjectId], references: [id])
+  subjectId                         String?         @map("subject")
+  program                           Program?        @relation("LearningPlan_program", fields: [programId], references: [id])
+  programId                         String?         @map("program")
+  version                           Int?            @default(1)
+  status                            String          @default("draft")
+  summary                           String          @default("")
+  startDate                         DateTime?
+  targetDate                        DateTime?
+  sessionsPerWeek                   Int?            @default(2)
+  totalHours                        Int?
+  recommendedPlan                   MembershipPlan? @relation("LearningPlan_recommendedPlan", fields: [recommendedPlanId], references: [id])
+  recommendedPlanId                 String?         @map("recommendedPlan")
+  recommendedPackage                Package?        @relation("LearningPlan_recommendedPackage", fields: [recommendedPackageId], references: [id])
+  recommendedPackageId              String?         @map("recommendedPackage")
+  baselineAssessment                Assessment?     @relation("LearningPlan_baselineAssessment", fields: [baselineAssessmentId], references: [id])
+  baselineAssessmentId              String?         @map("baselineAssessment")
+  goals                             PlanGoal[]      @relation("PlanGoal_plan")
+  previousVersion                   LearningPlan?   @relation("LearningPlan_previousVersion", fields: [previousVersionId], references: [id])
+  previousVersionId                 String?         @map("previousVersion")
+  declineReason                     String          @default("")
+  proposedAt                        DateTime?
+  acceptedAt                        DateTime?
+  createdAt                         DateTime        @default(now())
+  updatedAt                         DateTime        @default(now()) @updatedAt
+  createdBy                         User?           @relation("LearningPlan_createdBy", fields: [createdById], references: [id])
+  createdById                       String?         @map("createdBy")
+  from_LearningPlan_previousVersion LearningPlan[]  @relation("LearningPlan_previousVersion")
+  from_Enrollment_plan              Enrollment[]    @relation("Enrollment_plan")
+
+  @@index([studentId])
+  @@index([subjectId])
+  @@index([programId])
+  @@index([status])
+  @@index([recommendedPlanId])
+  @@index([recommendedPackageId])
+  @@index([baselineAssessmentId])
+  @@index([previousVersionId])
+  @@index([createdById])
+}
+
+model PlanGoal {
+  id          String        @id @default(cuid())
+  plan        LearningPlan? @relation("PlanGoal_plan", fields: [planId], references: [id])
+  planId      String?       @map("plan")
+  title       String        @default("")
+  skill       String        @default("")
+  baseline    String        @default("")
+  target      String        @default("")
+  status      String        @default("not_started")
+  masteredAt  DateTime?
+  sortOrder   Int?          @default(0)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @default(now()) @updatedAt
+  createdBy   User?         @relation("PlanGoal_createdBy", fields: [createdById], references: [id])
+  createdById String?       @map("createdBy")
+
+  @@index([planId])
+  @@index([status])
+  @@index([createdById])
+}
+
+model Enrollment {
+  id                             String           @id @default(cuid())
+  student                        Student?         @relation("Enrollment_student", fields: [studentId], references: [id])
+  studentId                      String?          @map("student")
+  family                         Family?          @relation("Enrollment_family", fields: [familyId], references: [id])
+  familyId                       String?          @map("family")
+  program                        Program?         @relation("Enrollment_program", fields: [programId], references: [id])
+  programId                      String?          @map("program")
+  location                       Location?        @relation("Enrollment_location", fields: [locationId], references: [id])
+  locationId                     String?          @map("location")
+  mode                           String           @default("in_centre")
+  status                         String           @default("pending_payment")
+  fundingType                    String           @default("membership")
+  membership                     Membership?      @relation("Enrollment_membership", fields: [membershipId], references: [id])
+  membershipId                   String?          @unique @map("membership")
+  studentPackage                 StudentPackage?  @relation("Enrollment_studentPackage", fields: [studentPackageId], references: [id])
+  studentPackageId               String?          @unique @map("studentPackage")
+  tutor                          Tutor?           @relation("Enrollment_tutor", fields: [tutorId], references: [id])
+  tutorId                        String?          @map("tutor")
+  plan                           LearningPlan?    @relation("Enrollment_plan", fields: [planId], references: [id])
+  planId                         String?          @map("plan")
+  preferredTimes                 Json?            @default("[]")
+  homeAddress                    String           @default("")
+  startDate                      DateTime?
+  endDate                        DateTime?
+  endReason                      String           @default("")
+  rematchCount                   Int?             @default(0)
+  trialAttendedAt                DateTime?
+  tutorConfirmedAt               DateTime?
+  series                         SessionSeries[]  @relation("SessionSeries_enrollment")
+  offers                         Offer[]          @relation("Offer_enrollment")
+  bookings                       Booking[]        @relation("Booking_enrollment")
+  createdAt                      DateTime         @default(now())
+  updatedAt                      DateTime         @default(now()) @updatedAt
+  createdBy                      User?            @relation("Enrollment_createdBy", fields: [createdById], references: [id])
+  createdById                    String?          @map("createdBy")
+  from_ProgressReport_enrollment ProgressReport[] @relation("ProgressReport_enrollment")
+
+  @@index([studentId])
+  @@index([familyId])
+  @@index([programId])
+  @@index([locationId])
+  @@index([status])
+  @@index([tutorId])
+  @@index([planId])
+  @@index([createdById])
+}
+
+model Offer {
+  id            String      @id @default(cuid())
+  enrollment    Enrollment? @relation("Offer_enrollment", fields: [enrollmentId], references: [id])
+  enrollmentId  String?     @map("enrollment")
+  tutor         Tutor?      @relation("Offer_tutor", fields: [tutorId], references: [id])
+  tutorId       String?     @map("tutor")
+  status        String      @default("sent")
+  openKey       String?     @unique
+  payRate       Int         @default(0)
+  proposedSlots Json?       @default("[]")
+  sentAt        DateTime?
+  expiresAt     DateTime?
+  respondedAt   DateTime?
+  declineReason String      @default("")
+  sentBy        User?       @relation("Offer_sentBy", fields: [sentById], references: [id])
+  sentById      String?     @map("sentBy")
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @default(now()) @updatedAt
+  createdBy     User?       @relation("Offer_createdBy", fields: [createdById], references: [id])
+  createdById   String?     @map("createdBy")
+
+  @@index([enrollmentId])
+  @@index([tutorId])
+  @@index([status])
+  @@index([sentById])
+  @@index([createdById])
+}
+
+model SessionSeries {
+  id               String      @id @default(cuid())
+  program          Program?    @relation("SessionSeries_program", fields: [programId], references: [id])
+  programId        String?     @map("program")
+  subject          Subject?    @relation("SessionSeries_subject", fields: [subjectId], references: [id])
+  subjectId        String?     @map("subject")
+  location         Location?   @relation("SessionSeries_location", fields: [locationId], references: [id])
+  locationId       String?     @map("location")
+  room             Room?       @relation("SessionSeries_room", fields: [roomId], references: [id])
+  roomId           String?     @map("room")
+  tutor            Tutor?      @relation("SessionSeries_tutor", fields: [tutorId], references: [id])
+  tutorId          String?     @map("tutor")
+  mode             String      @default("in_centre")
+  weekday          Int         @default(1)
+  startMinute      Int         @default(960)
+  minutes          Int         @default(60)
+  capacity         Int         @default(4)
+  startDate        DateTime
+  endDate          DateTime?
+  enrollment       Enrollment? @relation("SessionSeries_enrollment", fields: [enrollmentId], references: [id])
+  enrollmentId     String?     @map("enrollment")
+  status           String      @default("active")
+  meetingUrl       String      @default("")
+  generatedThrough DateTime?
+  sessions         Session[]   @relation("Session_series")
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @default(now()) @updatedAt
+  createdBy        User?       @relation("SessionSeries_createdBy", fields: [createdById], references: [id])
+  createdById      String?     @map("createdBy")
+
+  @@index([programId])
+  @@index([subjectId])
+  @@index([locationId])
+  @@index([roomId])
+  @@index([tutorId])
+  @@index([enrollmentId])
+  @@index([status])
+  @@index([createdById])
+}
+
+model Session {
+  id              String          @id @default(cuid())
+  series          SessionSeries?  @relation("Session_series", fields: [seriesId], references: [id])
+  seriesId        String?         @map("series")
+  program         Program?        @relation("Session_program", fields: [programId], references: [id])
+  programId       String?         @map("program")
+  subject         Subject?        @relation("Session_subject", fields: [subjectId], references: [id])
+  subjectId       String?         @map("subject")
+  location        Location?       @relation("Session_location", fields: [locationId], references: [id])
+  locationId      String?         @map("location")
+  room            Room?           @relation("Session_room", fields: [roomId], references: [id])
+  roomId          String?         @map("room")
+  tutor           Tutor?          @relation("Session_tutor", fields: [tutorId], references: [id])
+  tutorId         String?         @map("tutor")
+  mode            String          @default("in_centre")
+  startsAt        DateTime        @default(now())
+  endsAt          DateTime        @default(now())
+  capacity        Int             @default(1)
+  status          String          @default("scheduled")
+  cancelReason    String          @default("")
+  meetingUrl      String          @default("")
+  isTrial         Boolean         @default(false)
+  substituteFor   Tutor?          @relation("Session_substituteFor", fields: [substituteForId], references: [id])
+  substituteForId String?         @map("substituteFor")
+  bookings        Booking[]       @relation("Booking_session")
+  waitlist        WaitlistEntry[] @relation("WaitlistEntry_session")
+  reports         SessionReport[] @relation("SessionReport_session")
+  payLines        PayLine[]       @relation("PayLine_session")
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @default(now()) @updatedAt
+  createdBy       User?           @relation("Session_createdBy", fields: [createdById], references: [id])
+  createdById     String?         @map("createdBy")
+
+  @@unique([seriesId, startsAt])
+  @@index([seriesId])
+  @@index([programId])
+  @@index([subjectId])
+  @@index([locationId])
+  @@index([roomId])
+  @@index([tutorId])
+  @@index([status])
+  @@index([substituteForId])
+  @@index([createdById])
+  @@index([tutorId, startsAt])
+  @@index([roomId, startsAt])
+  @@index([locationId, startsAt])
+}
+
+model Booking {
+  id                         String          @id @default(cuid())
+  session                    Session?        @relation("Booking_session", fields: [sessionId], references: [id])
+  sessionId                  String?         @map("session")
+  student                    Student?        @relation("Booking_student", fields: [studentId], references: [id])
+  studentId                  String?         @map("student")
+  family                     Family?         @relation("Booking_family", fields: [familyId], references: [id])
+  familyId                   String?         @map("family")
+  enrollment                 Enrollment?     @relation("Booking_enrollment", fields: [enrollmentId], references: [id])
+  enrollmentId               String?         @map("enrollment")
+  status                     String          @default("booked")
+  activeKey                  String?         @unique
+  source                     String          @default("staff")
+  creditGrant                CreditGrant?    @relation("Booking_creditGrant", fields: [creditGrantId], references: [id])
+  creditGrantId              String?         @map("creditGrant")
+  payAsYouGo                 Boolean         @default(false)
+  invoice                    Invoice?        @relation("Booking_invoice", fields: [invoiceId], references: [id])
+  invoiceId                  String?         @map("invoice")
+  minutes                    Int?            @default(0)
+  startsAt                   DateTime?
+  endsAt                     DateTime?
+  markedBy                   User?           @relation("Booking_markedBy", fields: [markedById], references: [id])
+  markedById                 String?         @map("markedBy")
+  markedAt                   DateTime?
+  cancelledAt                DateTime?
+  cancelledBy                User?           @relation("Booking_cancelledBy", fields: [cancelledById], references: [id])
+  cancelledById              String?         @map("cancelledBy")
+  lateReason                 String          @default("")
+  makeUpGrant                CreditGrant?    @relation("Booking_makeUpGrant", fields: [makeUpGrantId], references: [id])
+  makeUpGrantId              String?         @unique @map("makeUpGrant")
+  payLine                    PayLine?        @relation("Booking_payLine", fields: [payLineId], references: [id])
+  payLineId                  String?         @unique @map("payLine")
+  reopenedAt                 DateTime?
+  reports                    SessionReport[] @relation("SessionReport_booking")
+  createdAt                  DateTime        @default(now())
+  updatedAt                  DateTime        @default(now()) @updatedAt
+  createdBy                  User?           @relation("Booking_createdBy", fields: [createdById], references: [id])
+  createdById                String?         @map("createdBy")
+  from_WaitlistEntry_booking WaitlistEntry[] @relation("WaitlistEntry_booking")
+  from_CreditEntry_booking   CreditEntry[]   @relation("CreditEntry_booking")
+  from_InvoiceLine_booking   InvoiceLine[]   @relation("InvoiceLine_booking")
+
+  @@index([sessionId])
+  @@index([studentId])
+  @@index([familyId])
+  @@index([enrollmentId])
+  @@index([status])
+  @@index([creditGrantId])
+  @@index([invoiceId])
+  @@index([markedById])
+  @@index([cancelledById])
+  @@index([createdById])
+  @@index([studentId, status])
+}
+
+model SessionReport {
+  id                  String    @id @default(cuid())
+  booking             Booking?  @relation("SessionReport_booking", fields: [bookingId], references: [id])
+  bookingId           String?   @map("booking")
+  session             Session?  @relation("SessionReport_session", fields: [sessionId], references: [id])
+  sessionId           String?   @map("session")
+  student             Student?  @relation("SessionReport_student", fields: [studentId], references: [id])
+  studentId           String?   @map("student")
+  tutor               Tutor?    @relation("SessionReport_tutor", fields: [tutorId], references: [id])
+  tutorId             String?   @map("tutor")
+  topicsCovered       String    @default("")
+  wentWell            String    @default("")
+  toImprove           String    @default("")
+  homework            String    @default("")
+  homeworkDueAt       DateTime?
+  homeworkStatus      String?
+  effort              Int?
+  staffNote           String    @default("")
+  attachment_filesize Int?
+  attachment_filename String?
+  publishedAt         DateTime?
+  guardianSeenAt      DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @default(now()) @updatedAt
+  createdBy           User?     @relation("SessionReport_createdBy", fields: [createdById], references: [id])
+  createdById         String?   @map("createdBy")
+
+  @@index([bookingId])
+  @@index([sessionId])
+  @@index([studentId])
+  @@index([tutorId])
+  @@index([createdById])
+}
+
+model WaitlistEntry {
+  id          String    @id @default(cuid())
+  session     Session?  @relation("WaitlistEntry_session", fields: [sessionId], references: [id])
+  sessionId   String?   @map("session")
+  student     Student?  @relation("WaitlistEntry_student", fields: [studentId], references: [id])
+  studentId   String?   @map("student")
+  family      Family?   @relation("WaitlistEntry_family", fields: [familyId], references: [id])
+  familyId    String?   @map("family")
+  status      String    @default("waiting")
+  activeKey   String?   @unique
+  position    Int?      @default(0)
+  promotedAt  DateTime?
+  booking     Booking?  @relation("WaitlistEntry_booking", fields: [bookingId], references: [id])
+  bookingId   String?   @map("booking")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @default(now()) @updatedAt
+  createdBy   User?     @relation("WaitlistEntry_createdBy", fields: [createdById], references: [id])
+  createdById String?   @map("createdBy")
+
+  @@index([sessionId])
+  @@index([studentId])
+  @@index([familyId])
+  @@index([status])
+  @@index([bookingId])
+  @@index([createdById])
+}
+
+model ProgressReport {
+  id               String      @id @default(cuid())
+  student          Student?    @relation("ProgressReport_student", fields: [studentId], references: [id])
+  studentId        String?     @map("student")
+  enrollment       Enrollment? @relation("ProgressReport_enrollment", fields: [enrollmentId], references: [id])
+  enrollmentId     String?     @map("enrollment")
+  periodStart      DateTime?
+  periodEnd        DateTime?
+  sessionsAttended Int?        @default(0)
+  sessionsMissed   Int?        @default(0)
+  narrative        String      @default("")
+  goalsSnapshot    Json?       @default("[]")
+  nextSteps        String      @default("")
+  status           String      @default("draft")
+  author           User?       @relation("ProgressReport_author", fields: [authorId], references: [id])
+  authorId         String?     @map("author")
+  authorTutor      Tutor?      @relation("ProgressReport_authorTutor", fields: [authorTutorId], references: [id])
+  authorTutorId    String?     @map("authorTutor")
+  withdrawReason   String      @default("")
+  publishedAt      DateTime?
+  acknowledgedAt   DateTime?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @default(now()) @updatedAt
+  createdBy        User?       @relation("ProgressReport_createdBy", fields: [createdById], references: [id])
+  createdById      String?     @map("createdBy")
+
+  @@index([studentId])
+  @@index([enrollmentId])
+  @@index([status])
+  @@index([authorId])
+  @@index([authorTutorId])
+  @@index([createdById])
+}
+
+model Membership {
+  id                          String           @id @default(cuid())
+  family                      Family?          @relation("Membership_family", fields: [familyId], references: [id])
+  familyId                    String?          @map("family")
+  student                     Student?         @relation("Membership_student", fields: [studentId], references: [id])
+  studentId                   String?          @map("student")
+  plan                        MembershipPlan?  @relation("Membership_plan", fields: [planId], references: [id])
+  planId                      String?          @map("plan")
+  enrollment                  Enrollment?      @relation("Enrollment_membership")
+  status                      String           @default("pending_payment")
+  price                       Int?             @default(0)
+  discountPercent             Int?             @default(0)
+  sessionsPerPeriod           Int?
+  weeklyCap                   Int?
+  startedAt                   DateTime?
+  currentPeriodStart          DateTime?
+  currentPeriodEnd            DateTime?
+  pausedFrom                  DateTime?
+  pausedUntil                 DateTime?
+  pauseRequestedFrom          DateTime?
+  pauseRequestedUntil         DateTime?
+  cancelRequestedAt           DateTime?
+  endsAt                      DateTime?
+  pastDueSince                DateTime?
+  lastPauseAt                 DateTime?
+  pendingPlan                 MembershipPlan?  @relation("Membership_pendingPlan", fields: [pendingPlanId], references: [id])
+  pendingPlanId               String?          @map("pendingPlan")
+  billingAttempts             BillingAttempt[] @relation("BillingAttempt_membership")
+  grants                      CreditGrant[]    @relation("CreditGrant_membership")
+  createdAt                   DateTime         @default(now())
+  updatedAt                   DateTime         @default(now()) @updatedAt
+  createdBy                   User?            @relation("Membership_createdBy", fields: [createdById], references: [id])
+  createdById                 String?          @map("createdBy")
+  from_InvoiceLine_membership InvoiceLine[]    @relation("InvoiceLine_membership")
+
+  @@index([familyId])
+  @@index([studentId])
+  @@index([planId])
+  @@index([status])
+  @@index([pendingPlanId])
+  @@index([createdById])
+}
+
+model StudentPackage {
+  id                              String        @id @default(cuid())
+  family                          Family?       @relation("StudentPackage_family", fields: [familyId], references: [id])
+  familyId                        String?       @map("family")
+  student                         Student?      @relation("StudentPackage_student", fields: [studentId], references: [id])
+  studentId                       String?       @map("student")
+  package                         Package?      @relation("StudentPackage_package", fields: [packageId], references: [id])
+  packageId                       String?       @map("package")
+  enrollment                      Enrollment?   @relation("Enrollment_studentPackage")
+  hours                           Int?          @default(0)
+  price                           Int?          @default(0)
+  purchasedAt                     DateTime?
+  expiresAt                       DateTime?
+  invoice                         Invoice?      @relation("StudentPackage_invoice", fields: [invoiceId], references: [id])
+  invoiceId                       String?       @map("invoice")
+  status                          String        @default("pending_payment")
+  grants                          CreditGrant[] @relation("CreditGrant_studentPackage")
+  createdAt                       DateTime      @default(now())
+  updatedAt                       DateTime      @default(now()) @updatedAt
+  createdBy                       User?         @relation("StudentPackage_createdBy", fields: [createdById], references: [id])
+  createdById                     String?       @map("createdBy")
+  from_InvoiceLine_studentPackage InvoiceLine[] @relation("InvoiceLine_studentPackage")
+
+  @@index([familyId])
+  @@index([studentId])
+  @@index([packageId])
+  @@index([invoiceId])
+  @@index([status])
+  @@index([createdById])
+}
+
+model CreditGrant {
+  id                          String          @id @default(cuid())
+  family                      Family?         @relation("CreditGrant_family", fields: [familyId], references: [id])
+  familyId                    String?         @map("family")
+  student                     Student?        @relation("CreditGrant_student", fields: [studentId], references: [id])
+  studentId                   String?         @map("student")
+  program                     Program?        @relation("CreditGrant_program", fields: [programId], references: [id])
+  programId                   String?         @map("program")
+  kind                        String          @default("goodwill")
+  membership                  Membership?     @relation("CreditGrant_membership", fields: [membershipId], references: [id])
+  membershipId                String?         @map("membership")
+  studentPackage              StudentPackage? @relation("CreditGrant_studentPackage", fields: [studentPackageId], references: [id])
+  studentPackageId            String?         @map("studentPackage")
+  sourceBooking               Booking?        @relation("Booking_makeUpGrant")
+  rolledFrom                  CreditGrant?    @relation("CreditGrant_rolledFrom", fields: [rolledFromId], references: [id])
+  rolledFromId                String?         @map("rolledFrom")
+  minutesGranted              Int?            @default(0)
+  minutesAvailable            Int?            @default(0)
+  unlimited                   Boolean         @default(false)
+  weeklyCap                   Int?
+  expiresAt                   DateTime?
+  periodStart                 DateTime?
+  periodEnd                   DateTime?
+  status                      String          @default("active")
+  entries                     CreditEntry[]   @relation("CreditEntry_grant")
+  bookings                    Booking[]       @relation("Booking_creditGrant")
+  createdAt                   DateTime        @default(now())
+  updatedAt                   DateTime        @default(now()) @updatedAt
+  createdBy                   User?           @relation("CreditGrant_createdBy", fields: [createdById], references: [id])
+  createdById                 String?         @map("createdBy")
+  from_CreditGrant_rolledFrom CreditGrant[]   @relation("CreditGrant_rolledFrom")
+
+  @@index([familyId])
+  @@index([studentId])
+  @@index([programId])
+  @@index([membershipId])
+  @@index([studentPackageId])
+  @@index([rolledFromId])
+  @@index([status])
+  @@index([createdById])
+  @@index([familyId, studentId, status])
+}
+
+model CreditEntry {
+  id          String       @id @default(cuid())
+  grant       CreditGrant? @relation("CreditEntry_grant", fields: [grantId], references: [id])
+  grantId     String?      @map("grant")
+  type        String       @default("grant")
+  minutes     Int          @default(0)
+  booking     Booking?     @relation("CreditEntry_booking", fields: [bookingId], references: [id])
+  bookingId   String?      @map("booking")
+  note        String       @default("")
+  actor       User?        @relation("CreditEntry_actor", fields: [actorId], references: [id])
+  actorId     String?      @map("actor")
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @default(now()) @updatedAt
+  createdBy   User?        @relation("CreditEntry_createdBy", fields: [createdById], references: [id])
+  createdById String?      @map("createdBy")
+
+  @@index([grantId])
+  @@index([bookingId])
+  @@index([actorId])
+  @@index([createdById])
+  @@index([grantId, type])
+}
+
+model Invoice {
+  id                          String           @id @default(cuid())
+  number                      Int?             @unique
+  family                      Family?          @relation("Invoice_family", fields: [familyId], references: [id])
+  familyId                    String?          @map("family")
+  location                    Location?        @relation("Invoice_location", fields: [locationId], references: [id])
+  locationId                  String?          @map("location")
+  status                      String           @default("draft")
+  kind                        String           @default("manual")
+  issuedAt                    DateTime?
+  dueAt                       DateTime?
+  subtotal                    Int?             @default(0)
+  discount                    Int?             @default(0)
+  tax                         Int?             @default(0)
+  total                       Int?             @default(0)
+  amountPaid                  Int?             @default(0)
+  amountCredited              Int?             @default(0)
+  currency                    String           @default("USD")
+  promoCode                   PromoCode?       @relation("Invoice_promoCode", fields: [promoCodeId], references: [id])
+  promoCodeId                 String?          @map("promoCode")
+  lines                       InvoiceLine[]    @relation("InvoiceLine_invoice")
+  payments                    Payment[]        @relation("Payment_invoice")
+  creditNotes                 CreditNote[]     @relation("CreditNote_invoice")
+  paymentSessions             PaymentSession[] @relation("PaymentSession_invoice")
+  notes                       String           @default("")
+  fulfilment                  Json?            @default("{}")
+  fulfilledAt                 DateTime?
+  createdAt                   DateTime         @default(now())
+  updatedAt                   DateTime         @default(now()) @updatedAt
+  createdBy                   User?            @relation("Invoice_createdBy", fields: [createdById], references: [id])
+  createdById                 String?          @map("createdBy")
+  from_Assessment_invoice     Assessment[]     @relation("Assessment_invoice")
+  from_Booking_invoice        Booking[]        @relation("Booking_invoice")
+  from_StudentPackage_invoice StudentPackage[] @relation("StudentPackage_invoice")
+  from_BillingAttempt_invoice BillingAttempt[] @relation("BillingAttempt_invoice")
+
+  @@index([familyId])
+  @@index([locationId])
+  @@index([status])
+  @@index([promoCodeId])
+  @@index([createdById])
+}
+
+model InvoiceLine {
+  id               String          @id @default(cuid())
+  invoice          Invoice?        @relation("InvoiceLine_invoice", fields: [invoiceId], references: [id])
+  invoiceId        String?         @map("invoice")
+  description      String          @default("")
+  kind             String          @default("manual")
+  quantity         Int             @default(1)
+  unitAmount       Int             @default(0)
+  amount           Int             @default(0)
+  student          Student?        @relation("InvoiceLine_student", fields: [studentId], references: [id])
+  studentId        String?         @map("student")
+  program          Program?        @relation("InvoiceLine_program", fields: [programId], references: [id])
+  programId        String?         @map("program")
+  booking          Booking?        @relation("InvoiceLine_booking", fields: [bookingId], references: [id])
+  bookingId        String?         @map("booking")
+  membership       Membership?     @relation("InvoiceLine_membership", fields: [membershipId], references: [id])
+  membershipId     String?         @map("membership")
+  studentPackage   StudentPackage? @relation("InvoiceLine_studentPackage", fields: [studentPackageId], references: [id])
+  studentPackageId String?         @map("studentPackage")
+  assessment       Assessment?     @relation("InvoiceLine_assessment", fields: [assessmentId], references: [id])
+  assessmentId     String?         @map("assessment")
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @default(now()) @updatedAt
+  createdBy        User?           @relation("InvoiceLine_createdBy", fields: [createdById], references: [id])
+  createdById      String?         @map("createdBy")
+
+  @@index([invoiceId])
+  @@index([studentId])
+  @@index([programId])
+  @@index([bookingId])
+  @@index([membershipId])
+  @@index([studentPackageId])
+  @@index([assessmentId])
+  @@index([createdById])
+}
+
+model CreditNote {
+  id          String   @id @default(cuid())
+  invoice     Invoice? @relation("CreditNote_invoice", fields: [invoiceId], references: [id])
+  invoiceId   String?  @map("invoice")
+  amount      Int      @default(0)
+  reason      String   @default("")
+  issuedBy    User?    @relation("CreditNote_issuedBy", fields: [issuedById], references: [id])
+  issuedById  String?  @map("issuedBy")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
+  createdBy   User?    @relation("CreditNote_createdBy", fields: [createdById], references: [id])
+  createdById String?  @map("createdBy")
+
+  @@index([invoiceId])
+  @@index([issuedById])
+  @@index([createdById])
+}
+
+model Payment {
+  id                String          @id @default(cuid())
+  invoice           Invoice?        @relation("Payment_invoice", fields: [invoiceId], references: [id])
+  invoiceId         String?         @map("invoice")
+  family            Family?         @relation("Payment_family", fields: [familyId], references: [id])
+  familyId          String?         @map("family")
+  amount            Int             @default(0)
+  currency          String          @default("USD")
+  method            String          @default("card")
+  reference         String          @default("")
+  status            String          @default("captured")
+  paymentSession    PaymentSession? @relation("Payment_paymentSession", fields: [paymentSessionId], references: [id])
+  paymentSessionId  String?         @unique @map("paymentSession")
+  providerPaymentId String?         @unique
+  receivedBy        User?           @relation("Payment_receivedBy", fields: [receivedById], references: [id])
+  receivedById      String?         @map("receivedBy")
+  refundedAmount    Int?            @default(0)
+  refunds           Refund[]        @relation("Refund_payment")
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @default(now()) @updatedAt
+  createdBy         User?           @relation("Payment_createdBy", fields: [createdById], references: [id])
+  createdById       String?         @map("createdBy")
+
+  @@index([invoiceId])
+  @@index([familyId])
+  @@index([status])
+  @@index([receivedById])
+  @@index([createdById])
+}
+
+model Refund {
+  id               String   @id @default(cuid())
+  payment          Payment? @relation("Refund_payment", fields: [paymentId], references: [id])
+  paymentId        String?  @map("payment")
+  amount           Int      @default(0)
+  reason           String   @default("")
+  status           String   @default("requested")
+  providerRefundId String   @default("")
+  idempotencyKey   String   @unique @default("")
+  failureReason    String   @default("")
+  requestedBy      User?    @relation("Refund_requestedBy", fields: [requestedById], references: [id])
+  requestedById    String?  @map("requestedBy")
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @default(now()) @updatedAt
+  createdBy        User?    @relation("Refund_createdBy", fields: [createdById], references: [id])
+  createdById      String?  @map("createdBy")
+
+  @@index([paymentId])
+  @@index([status])
+  @@index([requestedById])
+  @@index([createdById])
+}
+
+model BillingAttempt {
+  id                String      @id @default(cuid())
+  membership        Membership? @relation("BillingAttempt_membership", fields: [membershipId], references: [id])
+  membershipId      String?     @map("membership")
+  periodStart       DateTime    @default(now())
+  periodEnd         DateTime?
+  invoice           Invoice?    @relation("BillingAttempt_invoice", fields: [invoiceId], references: [id])
+  invoiceId         String?     @map("invoice")
+  attemptNumber     Int         @default(1)
+  status            String      @default("pending")
+  amount            Int?        @default(0)
+  requestHash       String      @default("")
+  leaseExpiresAt    DateTime?
+  providerPaymentId String      @default("")
+  failureCode       String      @default("")
+  failureMessage    String      @default("")
+  nextRetryAt       DateTime?
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @default(now()) @updatedAt
+  createdBy         User?       @relation("BillingAttempt_createdBy", fields: [createdById], references: [id])
+  createdById       String?     @map("createdBy")
+
+  @@unique([membershipId, periodStart, attemptNumber])
+  @@index([membershipId])
+  @@index([invoiceId])
+  @@index([status])
+  @@index([createdById])
+}
+
+model PayLine {
+  id           String      @id @default(cuid())
+  tutor        Tutor?      @relation("PayLine_tutor", fields: [tutorId], references: [id])
+  tutorId      String?     @map("tutor")
+  session      Session?    @relation("PayLine_session", fields: [sessionId], references: [id])
+  sessionId    String?     @map("session")
+  booking      Booking?    @relation("Booking_payLine")
+  kind         String      @default("session")
+  workedAt     DateTime    @default(now())
+  minutes      Int         @default(0)
+  rate         Int         @default(0)
+  amount       Int         @default(0)
+  status       String      @default("accrued")
+  activeKey    String?     @unique
+  payrollRun   PayrollRun? @relation("PayLine_payrollRun", fields: [payrollRunId], references: [id])
+  payrollRunId String?     @map("payrollRun")
+  voidReason   String      @default("")
+  note         String      @default("")
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @default(now()) @updatedAt
+  createdBy    User?       @relation("PayLine_createdBy", fields: [createdById], references: [id])
+  createdById  String?     @map("createdBy")
+
+  @@index([tutorId])
+  @@index([sessionId])
+  @@index([status])
+  @@index([payrollRunId])
+  @@index([createdById])
+  @@index([tutorId, status])
+}
+
+model PayrollRun {
+  id           String    @id @default(cuid())
+  location     Location? @relation("PayrollRun_location", fields: [locationId], references: [id])
+  locationId   String?   @map("location")
+  periodStart  DateTime  @default(now())
+  periodEnd    DateTime  @default(now())
+  status       String    @default("draft")
+  lines        PayLine[] @relation("PayLine_payrollRun")
+  approvedBy   User?     @relation("PayrollRun_approvedBy", fields: [approvedById], references: [id])
+  approvedById String?   @map("approvedBy")
+  approvedAt   DateTime?
+  paidAt       DateTime?
+  payments     Json?     @default("[]")
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @default(now()) @updatedAt
+  createdBy    User?     @relation("PayrollRun_createdBy", fields: [createdById], references: [id])
+  createdById  String?   @map("createdBy")
+
+  @@index([locationId])
+  @@index([status])
+  @@index([approvedById])
+  @@index([createdById])
+}
+
+model PaymentProvider {
+  id              String           @id @default(cuid())
+  name            String           @default("")
+  code            String           @unique @default("")
+  isInstalled     Boolean          @default(true)
+  isDefault       Boolean          @default(false)
+  credentials     Json?            @default("{}")
+  metadata        Json?            @default("{}")
+  paymentSessions PaymentSession[] @relation("PaymentSession_paymentProvider")
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @default(now()) @updatedAt
+  createdBy       User?            @relation("PaymentProvider_createdBy", fields: [createdById], references: [id])
+  createdById     String?          @map("createdBy")
+
+  @@index([createdById])
+}
+
+model PaymentSession {
+  id                 String           @id @default(cuid())
+  invoice            Invoice?         @relation("PaymentSession_invoice", fields: [invoiceId], references: [id])
+  invoiceId          String?          @map("invoice")
+  paymentProvider    PaymentProvider? @relation("PaymentSession_paymentProvider", fields: [paymentProviderId], references: [id])
+  paymentProviderId  String?          @map("paymentProvider")
+  payment            Payment?         @relation("Payment_paymentSession")
+  purpose            String           @default("invoice")
+  family             Family?          @relation("PaymentSession_family", fields: [familyId], references: [id])
+  familyId           String?          @map("family")
+  idempotencyKeyHash String           @unique @default("")
+  status             String           @default("pending")
+  amount             Int              @default(0)
+  currencyCode       String           @default("USD")
+  providerPaymentId  String           @default("")
+  clientSecret       String           @default("")
+  offSession         Boolean          @default(false)
+  failureMessage     String           @default("")
+  capturedAt         DateTime?
+  cancelledAt        DateTime?
+  refundedAmount     Int?             @default(0)
+  metadata           Json?            @default("{}")
+  reviewReason       String           @default("")
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @default(now()) @updatedAt
+  createdBy          User?            @relation("PaymentSession_createdBy", fields: [createdById], references: [id])
+  createdById        String?          @map("createdBy")
+
+  @@index([invoiceId])
+  @@index([paymentProviderId])
+  @@index([familyId])
+  @@index([status])
+  @@index([providerPaymentId])
+  @@index([createdById])
+}
+
+model PaymentWebhookEvent {
+  id              String   @id @default(cuid())
+  replayKey       String   @unique @default("")
+  providerCode    String   @default("")
+  providerEventId String   @default("")
+  eventType       String   @default("")
+  payloadHash     String   @default("")
+  outcome         String   @default("")
+  processedAt     DateTime
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @default(now()) @updatedAt
+  createdBy       User?    @relation("PaymentWebhookEvent_createdBy", fields: [createdById], references: [id])
+  createdById     String?  @map("createdBy")
+
+  @@index([createdById])
+}
+
+model Task {
+  id            String    @id @default(cuid())
+  kind          String    @default("manual")
+  title         String    @default("")
+  family        Family?   @relation("Task_family", fields: [familyId], references: [id])
+  familyId      String?   @map("family")
+  student       Student?  @relation("Task_student", fields: [studentId], references: [id])
+  studentId     String?   @map("student")
+  lead          Lead?     @relation("Task_lead", fields: [leadId], references: [id])
+  leadId        String?   @map("lead")
+  location      Location? @relation("Task_location", fields: [locationId], references: [id])
+  locationId    String?   @map("location")
+  owner         User?     @relation("Task_owner", fields: [ownerId], references: [id])
+  ownerId       String?   @map("owner")
+  relatedType   String    @default("")
+  relatedId     String    @default("")
+  dueAt         DateTime?
+  status        String    @default("open")
+  openKey       String?   @unique
+  outcomeNote   String    @default("")
+  completedBy   User?     @relation("Task_completedBy", fields: [completedById], references: [id])
+  completedById String?   @map("completedBy")
+  completedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @default(now()) @updatedAt
+  createdBy     User?     @relation("Task_createdBy", fields: [createdById], references: [id])
+  createdById   String?   @map("createdBy")
+
+  @@index([familyId])
+  @@index([studentId])
+  @@index([leadId])
+  @@index([locationId])
+  @@index([ownerId])
+  @@index([dueAt])
+  @@index([status])
+  @@index([completedById])
+  @@index([createdById])
+}
+
+model Message {
+  id              String    @id @default(cuid())
+  family          Family?   @relation("Message_family", fields: [familyId], references: [id])
+  familyId        String?   @map("family")
+  sender          User?     @relation("Message_sender", fields: [senderId], references: [id])
+  senderId        String?   @map("sender")
+  direction       String    @default("outbound")
+  channel         String    @default("email")
+  subject         String    @default("")
+  body            String    @default("")
+  visibleToFamily Boolean   @default(true)
+  threadKey       String    @default("")
+  readAt          DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @default(now()) @updatedAt
+  createdBy       User?     @relation("Message_createdBy", fields: [createdById], references: [id])
+  createdById     String?   @map("createdBy")
+
+  @@index([familyId])
+  @@index([senderId])
+  @@index([threadKey])
+  @@index([createdById])
+}
+
+model NotificationLog {
+  id          String    @id @default(cuid())
+  recipient   String    @default("")
+  template    String    @default("")
+  subject     String    @default("")
+  relatedType String    @default("")
+  relatedId   String    @default("")
+  channel     String    @default("email")
+  status      String    @default("queued")
+  error       String    @default("")
+  sentAt      DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @default(now()) @updatedAt
+  createdBy   User?     @relation("NotificationLog_createdBy", fields: [createdById], references: [id])
+  createdById String?   @map("createdBy")
+
+  @@index([createdById])
+}
+
+model Review {
+  id           String    @id @default(cuid())
+  family       Family?   @relation("Review_family", fields: [familyId], references: [id])
+  familyId     String?   @map("family")
+  tutor        Tutor?    @relation("Review_tutor", fields: [tutorId], references: [id])
+  tutorId      String?   @map("tutor")
+  location     Location? @relation("Review_location", fields: [locationId], references: [id])
+  locationId   String?   @map("location")
+  program      Program?  @relation("Review_program", fields: [programId], references: [id])
+  programId    String?   @map("program")
+  authorName   String    @default("")
+  rating       Int       @default(5)
+  text         String    @default("")
+  source       String    @default("email")
+  status       String    @default("pending")
+  recordedBy   User?     @relation("Review_recordedBy", fields: [recordedById], references: [id])
+  recordedById String?   @map("recordedBy")
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @default(now()) @updatedAt
+  createdBy    User?     @relation("Review_createdBy", fields: [createdById], references: [id])
+  createdById  String?   @map("createdBy")
+
+  @@index([familyId])
+  @@index([tutorId])
+  @@index([locationId])
+  @@index([programId])
+  @@index([status])
+  @@index([recordedById])
+  @@index([createdById])
+}
+
+model ChangeEvent {
+  id            String   @id @default(cuid())
+  aggregateType String   @default("")
+  aggregateId   String   @default("")
+  from          String   @default("")
+  to            String   @default("")
+  actor         User?    @relation("ChangeEvent_actor", fields: [actorId], references: [id])
+  actorId       String?  @map("actor")
+  reason        String   @default("")
+  data          Json?    @default("{}")
+  at            DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @default(now()) @updatedAt
+  createdBy     User?    @relation("ChangeEvent_createdBy", fields: [createdById], references: [id])
+  createdById   String?  @map("createdBy")
+
+  @@index([actorId])
+  @@index([createdById])
+  @@index([aggregateType, aggregateId])
+}
+
+model CommandReceipt {
+  id            String    @id @default(cuid())
+  eventKey      String    @unique @default("")
+  eventType     String    @default("")
+  schemaVersion Int       @default(1)
+  aggregateType String    @default("")
+  aggregateId   String    @default("")
+  location      Location? @relation("CommandReceipt_location", fields: [locationId], references: [id])
+  locationId    String?   @map("location")
+  payload       Json?
+  result        Json?
+  actorId       String    @default("")
+  payloadHash   String    @default("")
+  occurredAt    DateTime
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @default(now()) @updatedAt
+  createdBy     User?     @relation("CommandReceipt_createdBy", fields: [createdById], references: [id])
+  createdById   String?   @map("createdBy")
+
+  @@index([locationId])
+  @@index([createdById])
 }
 
 model OAuthApp {
@@ -100,6 +1899,10 @@ model OAuthApp {
   supportUrl              String   @default("")
   createdAt               DateTime @default(now())
   updatedAt               DateTime @default(now()) @updatedAt
+  createdBy               User?    @relation("OAuthApp_createdBy", fields: [createdById], references: [id])
+  createdById             String?  @map("createdBy")
+
+  @@index([createdById])
 }
 
 model OAuthToken {
@@ -122,7 +1925,10 @@ model OAuthToken {
   codeChallengeMethod String?
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @default(now()) @updatedAt
+  createdBy           User?     @relation("OAuthToken_createdBy", fields: [createdById], references: [id])
+  createdById         String?   @map("createdBy")
 
   @@index([clientId])
   @@index([userId])
+  @@index([createdById])
 }

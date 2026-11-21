@@ -6,64 +6,38 @@ import { statelessSessions } from "@keystone-6/core/session";
 import { extendGraphqlSchema } from "./mutations";
 import { sendPasswordResetEmail } from "./lib/mail";
 import { withMcpBearerSessions } from "./mcp-oauth/session";
+import { storageConfig } from "./lib/storage";
+import { ROLE_FLAGS } from "./access";
+import { ROLE_TEMPLATES } from "./lib/roles";
 
 const databaseURL = process.env.DATABASE_URL || "file:./keystone.db";
 
 const sessionConfig = {
-  maxAge: 60 * 60 * 24 * 360, // How long they stay signed in?
-  secret:
-    process.env.SESSION_SECRET || "this secret should only be used in testing",
+  maxAge: 60 * 60 * 24 * 30,
+  secret: process.env.SESSION_SECRET || "this secret should only be used in testing",
 };
-
-const {
-  S3_BUCKET_NAME: bucketName = "keystone-test",
-  S3_REGION: region = "ap-southeast-2",
-  S3_ACCESS_KEY_ID: accessKeyId = "keystone",
-  S3_SECRET_ACCESS_KEY: secretAccessKey = "keystone",
-  S3_ENDPOINT: endpoint = "https://sfo3.digitaloceanspaces.com",
-} = process.env;
 
 const { withAuth } = createAuth({
   listKey: "User",
   identityField: "email",
   secretField: "password",
+  // The first account is the owner (§9: "the owner's account from the first sign-up").
   initFirstItem: {
     fields: ["name", "email", "password"],
-    itemData: {
-      role: {
-        create: {
-          name: "Admin",
-          canCreateTodos: true,
-          canManageAllTodos: true,
-          canSeeOtherPeople: true,
-          canEditOtherPeople: true,
-          canManagePeople: true,
-          canManageRoles: true,
-          canAccessDashboard: true,
-        },
-      },
-    },
+    itemData: { role: { create: ROLE_TEMPLATES.Owner } },
   },
   passwordResetLink: {
     async sendToken(args) {
-      // send the email
       await sendPasswordResetEmail(args.token, args.identity);
     },
   },
   sessionData: `
     name
     email
-    role {
-      id
-      name
-      canCreateTodos
-      canManageAllTodos
-      canSeeOtherPeople
-      canEditOtherPeople
-      canManagePeople
-      canManageRoles
-      canAccessDashboard
-    }
+    role { id name ${ROLE_FLAGS.join(" ")} }
+    locationMemberships { id role status location { id status } }
+    tutor { id }
+    family { id }
   `,
 });
 
@@ -74,19 +48,7 @@ export default withAuth(
       url: databaseURL,
     },
     lists: models,
-    storage: {
-      my_images: {
-        kind: "s3",
-        type: "image",
-        bucketName,
-        region,
-        accessKeyId,
-        secretAccessKey,
-        endpoint,
-        signed: { expiry: 5000 },
-        forcePathStyle: true,
-      },
-    },
+    storage: storageConfig(),
     ui: {
       isAccessAllowed: ({ session }) => session?.data.role?.canAccessDashboard ?? false,
     },

@@ -10,7 +10,7 @@ const ts = require('typescript');
 const root = path.resolve(__dirname, '..');
 const REAL = new Set(['graphql', 'node:crypto', '@keystone-6/core/access']);
 
-function sandbox({ env = { SESSION_SECRET: 'unit-test-secret-unit-test-secret-0123'}, mocks = {}, logs = [] } = {}) {
+function loader({ env = { SESSION_SECRET: 'unit-test-secret-unit-test-secret-0123'}, mocks = {}, logs = [] } = {}) {
   const cache = new Map();
   function load(relative) {
     const filename = path.resolve(root, relative);
@@ -71,7 +71,7 @@ function fakePrisma() {
   return prisma;
 }
 
-const STAFF_ROLE = { id: 'r1', name: 'Admin', canCreateTodos: true, canManageAllTodos: true, canSeeOtherPeople: true,
+const STAFF_ROLE = { id: 'r1', name: 'Admin', canSeeOtherPeople: true,
   canEditOtherPeople: true, canManagePeople: true, canManageRoles: true, canAccessDashboard: true };
 const USERS = {
   customer: { id: 'customer', name: 'Cass Customer', email: 'cass@example.invalid', role: null },
@@ -108,7 +108,7 @@ function fakeKeystone(load) {
 }
 
 function harness() {
-  const { load } = sandbox();
+  const { load } = loader();
   const { keystoneContext, prisma } = fakeKeystone(load);
   const routes = load('features/keystone/mcp-oauth/routes.ts');
   const core = load('features/keystone/mcp-oauth/core.ts');
@@ -259,14 +259,13 @@ test('a customer token is the customer: no staff role, and staff mutations are r
   assert.deepEqual([...session.mcp.scopes], ['mcp:read', 'mcp:write']);
 
   // The starter's real access rules decide, exactly as for the customer's cookie.
-  const { load } = sandbox();
+  const { load } = loader();
   const { permissions, rules } = load('features/keystone/access.ts');
   const { Role } = { Role: { create: permissions.canManageRoles, update: permissions.canManageRoles } };
   assert.equal(Role.create({ session }), false);
   assert.equal(permissions.canManagePeople({ session }), false);
-  assert.equal(permissions.canManageAllTodos({ session }), false);
+  assert.equal(permissions.canManageFamilies({ session }), false);
   assert.deepEqual(plain(rules.canUpdatePeople({ session })), { id: { equals: 'customer' } });
-  assert.deepEqual(plain(rules.canManageTodos({ session })), { assignedTo: { id: { equals: 'customer' } } });
 
   const staff = await connect(h, 'staff');
   const staffSession = await sessionFor(h, staff.tokens.access_token);
@@ -280,9 +279,9 @@ test('scopes only narrow: read-only tokens cannot mutate; no token can touch cre
   const { parse } = require('graphql');
   const problem = (source, scopes, variables) => h.guard.mcpOperationProblem({ document: parse(source), variables, scopes });
   const write = ['mcp:read', 'mcp:write'];
-  assert.equal(problem('{ todos { id } }', ['mcp:read']), null);
-  assert.equal(problem('mutation { createTodo(data: { label: "x" }) { id } }', ['mcp:read']), h.guard.READ_ONLY_MESSAGE);
-  assert.equal(problem('mutation { createTodo(data: { label: "x" }) { id } }', write), null);
+  assert.equal(problem('{ leads { id } }', ['mcp:read']), null);
+  assert.equal(problem('mutation { createLead(data: { guardianName: "x" }) { id } }', ['mcp:read']), h.guard.READ_ONLY_MESSAGE);
+  assert.equal(problem('mutation { createLead(data: { guardianName: "x" }) { id } }', write), null);
   for (const source of [
     'mutation { endSession }',
     'mutation { authenticateUserWithPassword(email: "a", password: "b") { __typename } }',
@@ -306,7 +305,7 @@ test('scopes only narrow: read-only tokens cannot mutate; no token can touch cre
     return stopped;
   };
   assert.equal(run({ itemId: 'staff' }, 'mutation { endSession }'), null);
-  assert.match(run({ itemId: 'customer', mcp: { clientId: 'c', scopes: ['mcp:read'] } }, 'mutation { createTodo(data: {}) { id } }').errors[0].message, /read-only/);
+  assert.match(run({ itemId: 'customer', mcp: { clientId: 'c', scopes: ['mcp:read'] } }, 'mutation { createLead(data: {}) { id } }').errors[0].message, /read-only/);
 });
 
 test('unticking "Allow changes" grants mcp:read only', async () => {

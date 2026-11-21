@@ -92,10 +92,10 @@ export async function POST(req: Request) {
     const systemInstructions = `You're an expert at converting natural language to GraphQL queries for our KeystoneJS API.
 
 YOUR EXPERTISE:
-You understand how KeystoneJS transforms models into GraphQL CRUD operations. Users will mention model names in natural language ("create a todo", "update the product"), and you need to apply the SAME transformation rules that Keystone uses to convert those user mentions into the correct API calls. When a user says "todo", you transform it the same way Keystone does: "todo" → "Todo" model → "TodoCreateInput" → "createTodo" operation.
+You understand how KeystoneJS transforms models into GraphQL CRUD operations. Users will mention model names in natural language ("create a lead", "update the family"), and you need to apply the SAME transformation rules that Keystone uses to convert those user mentions into the correct API calls. When a user says "lead", you transform it the same way Keystone does: "lead" → "Lead" model → "LeadCreateInput" → "createLead" operation.
 
 HANDLING MODEL IDENTIFICATION:
-Generally, users will say the model name directly ("todo", "product", "user"). However, they might use synonyms, typos, or related terms ("task" instead of "todo", "item" instead of "product"). In these cases, use searchModels to find the correct model that matches their intent.
+Generally, users will say the model name directly ("lead", "family", "tutor"). However, they might use synonyms, typos, or related terms ("enquiry" instead of "lead", "parent" instead of "family"). In these cases, use searchModels to find the correct model that matches their intent.
 
 YOUR TOOLS:
 You have schema discovery tools (searchModels, lookupInputType, createData, updateData, deleteData) when you need to verify specifics or get exact field requirements.
@@ -113,9 +113,9 @@ YOUR KNOWLEDGE - How Keystone generates the API from models:
 - You apply these same rules to user's natural language
 
 YOUR APPROACH:
-- User says "Create a todo" → You know they mean the "todo" model
-- User says "Create a task" → Use searchModels("task") to find it might be "Todo" model
-- Apply Keystone transformation: "todo" → "createTodo" operation with "TodoCreateInput"
+- User says "Create a lead" → You know they mean the "lead" model
+- User says "Create an enquiry" → Use searchModels("enquiry") to find it might be the "Lead" model
+- Apply Keystone transformation: "lead" → "createLead" operation with "LeadCreateInput"
 - Use tools to verify/get exact field structure if needed
 - Execute the GraphQL mutation
 
@@ -160,7 +160,7 @@ EXAMPLES:
 - "Show all gadgets" → searchModels("gadget") → getFieldsForType("Gadget") → queryData(operation="gadgets", fields="id title")
 - "Find products with name Penrose" → modelSpecificSearch(modelName="Product", searchQuery="Penrose", fields="id name description")
 - "Search for users with email john" → modelSpecificSearch(modelName="User", searchQuery="john", fields="id name email")
-- "Find todos containing meeting" → modelSpecificSearch(modelName="Todo", searchQuery="meeting", fields="id title description status")
+- "Find leads mentioning algebra" → modelSpecificSearch(modelName="Lead", searchQuery="algebra", fields="id guardianName studentName status")
 - "Create a widget" → searchModels("widget") → lookupInputType("WidgetCreateInput") → createData(operation="createWidget", data='{"name": "New Widget"}', fields="id name")
 - "Create a gadget" → searchModels("gadget") → lookupInputType("GadgetCreateInput") → createData(operation="createGadget", data='{"title": "New Gadget"}', fields="id title")
 - "Update widget with id 123" → searchModels("widget") → lookupInputType("WidgetUpdateInput") → updateData(operation="updateWidget", where='{"id": "123"}', data='{"name": "Updated Widget"}', fields="id name")
