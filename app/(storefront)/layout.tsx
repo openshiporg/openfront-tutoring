@@ -1,12 +1,13 @@
 import type { Metadata } from 'next'
-import { DM_Sans, Plus_Jakarta_Sans } from 'next/font/google'
+import localFont from 'next/font/local'
 import { getBusiness } from '@/features/storefront/lib/data'
 import { siteOrigin } from '@/features/storefront/lib/site'
 import '@/features/storefront/styles/brightpath.css'
 
 // Mira: a tight geometric grotesk for headlines, a friendly humanist sans for body text.
-const head = Plus_Jakarta_Sans({ variable: '--font-bp-head', weight: ['500', '600', '700', '800'], subsets: ['latin'] })
-const body = DM_Sans({ variable: '--font-bp-body', weight: ['400', '500', '600', '700'], subsets: ['latin'] })
+// Self-hosted variable fonts (Latin subset, SIL OFL): no build-time fetch from Google.
+const head = localFont({ src: '../../features/storefront/fonts/PlusJakartaSans-latin.woff2', weight: '500 800', variable: '--font-bp-head', display: 'swap' })
+const body = localFont({ src: '../../features/storefront/fonts/DMSans-latin.woff2', weight: '400 700', variable: '--font-bp-body', display: 'swap' })
 
 export async function generateMetadata(): Promise<Metadata> {
   const business = await getBusiness()
