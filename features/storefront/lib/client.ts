@@ -10,6 +10,25 @@ async function endpoint() {
   return `http://127.0.0.1:${port}/api/graphql`
 }
 
+/**
+ * A mutation may start a session (bookAssessment signs a new guardian in, sign-out ends one).
+ * Keystone sets it on the response to this server-side request; hand it on to the browser.
+ * cookies().set only works inside server actions and route handlers; on page renders it throws and is ignored.
+ */
+async function forwardSession(res: Response) {
+  const raw = res.headers.getSetCookie?.() ?? []
+  const line = raw.find((c) => c.startsWith('keystonejs-session='))
+  if (!line) return
+  const value = decodeURIComponent(line.split(';')[0].slice('keystonejs-session='.length))
+  try {
+    const store = await cookies()
+    if (!value || /max-age=0|expires=thu, 01 jan 1970/i.test(line)) store.delete('keystonejs-session')
+    else store.set('keystonejs-session', value, { httpOnly: true, sameSite: 'lax', path: '/', secure: process.env.NODE_ENV === 'production', maxAge: 60 * 60 * 24 * 30 })
+  } catch {
+    // Page render: nothing to forward to.
+  }
+}
+
 export type GqlResult<T> = { data: T | null; error: string | null }
 
 const GENERIC = 'Something went wrong on our side. Please try again in a moment.'
@@ -24,6 +43,7 @@ export async function gql<T = any>(query: string, variables: Record<string, unkn
       cache: 'no-store',
       redirect: 'error',
     })
+    await forwardSession(res)
     const json = await res.json().catch(() => null)
     if (!json) return { data: null, error: GENERIC }
     if (json.errors?.length) {

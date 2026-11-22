@@ -1,11 +1,11 @@
 import type { Metadata } from 'next'
-import { Figtree, Plus_Jakarta_Sans } from 'next/font/google'
+import { DM_Sans, Plus_Jakarta_Sans } from 'next/font/google'
 import { getBusiness } from '@/features/storefront/lib/data'
 import '@/features/storefront/styles/brightpath.css'
 
 // Mira: a tight geometric grotesk for headlines, a friendly humanist sans for body text.
 const head = Plus_Jakarta_Sans({ variable: '--font-bp-head', weight: ['500', '600', '700', '800'], subsets: ['latin'] })
-const body = Figtree({ variable: '--font-bp-body', weight: ['400', '500', '600', '700'], subsets: ['latin'] })
+const body = DM_Sans({ variable: '--font-bp-body', weight: ['400', '500', '600', '700'], subsets: ['latin'] })
 
 export async function generateMetadata(): Promise<Metadata> {
   const business = await getBusiness()
