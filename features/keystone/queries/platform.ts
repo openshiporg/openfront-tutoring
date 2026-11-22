@@ -11,7 +11,14 @@
 import { Prisma } from '@prisma/client'
 import { LOCATION_SCOPED_FLAGS, locationRoleAllows, type RoleFlag } from '../access'
 import { can, canAt, isOwnerActor, loadActor, type Actor } from '../lib/actor'
-import { CommandError } from '../lib/errors'
+import { GraphQLError } from 'graphql'
+
+/** These read-query failures are written for staff, not driver errors. */
+class CommandError extends GraphQLError {
+  constructor(message: string) {
+    super(message, { extensions: { code: /permission|Sign in|not found/.test(message) ? 'KS_ACCESS_DENIED' : 'KS_VALIDATION_FAILURE' } })
+  }
+}
 
 const gql = String.raw
 
