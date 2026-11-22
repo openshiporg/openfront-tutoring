@@ -7862,6 +7862,12 @@ type Mutation {
   createTutorApplication(data: JSON!, idempotencyKey: String): CommandResult!
   transitionApplication(applicationId: ID!, status: String!, note: String, idempotencyKey: String): CommandResult!
   approveApplication(applicationId: ID!, data: JSON, idempotencyKey: String): CommandResult!
+  addPayLine(tutorId: ID!, kind: String!, amount: Int!, minutes: Int, workedAt: String, sessionId: ID, note: String!, idempotencyKey: String): CommandResult!
+  voidPayLine(payLineId: ID!, reason: String!, idempotencyKey: String): CommandResult!
+  createPayrollRun(periodStart: String, periodEnd: String, locationId: ID, idempotencyKey: String): CommandResult!
+  approvePayrollRun(payrollRunId: ID!, idempotencyKey: String): CommandResult!
+  cancelPayrollRun(payrollRunId: ID!, reason: String!, idempotencyKey: String): CommandResult!
+  markPayrollRunPaid(payrollRunId: ID!, payments: JSON!, idempotencyKey: String): CommandResult!
 }
 
 union UserAuthenticationWithPasswordResult = UserAuthenticationWithPasswordSuccess | UserAuthenticationWithPasswordFailure
@@ -8096,6 +8102,9 @@ type Query {
   membershipPlanChangePreview(membershipId: ID!, planId: ID!): JSON
   matchingCandidates(enrollmentId: ID!): JSON
   myOffers: JSON
+  payrollRunCsv(payrollRunId: ID!): String
+  payrollPreview(periodStart: String!, periodEnd: String!, locationId: ID): JSON
+  myPayStatement(from: String, to: String): JSON
 }
 
 union AuthenticatedItem = User
