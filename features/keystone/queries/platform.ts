@@ -93,9 +93,15 @@ export const resolvers = {
       const prisma = context.sudo().prisma
       const now = new Date()
 
-      const [locations, business] = await Promise.all([
+      const allowed = scopeFor(actor, 'canViewReports', null)
+      const [locations, choices, business] = await Promise.all([
         prisma.location.findMany({
           where: scope.all ? {} : { id: { in: scope.ids } },
+          select: { id: true, name: true }, orderBy: { name: 'asc' },
+        }),
+        // Every location the actor may pick, so choosing one does not hide the others.
+        prisma.location.findMany({
+          where: allowed.all ? {} : { id: { in: allowed.ids } },
           select: { id: true, name: true }, orderBy: { name: 'asc' },
         }),
         prisma.business.findFirst({ select: { currency: true } }),
@@ -239,6 +245,7 @@ export const resolvers = {
         currency: business?.currency ?? 'USD',
         scope: scope.all ? 'all' : args.locationId ? 'location' : 'mine',
         locations,
+        locationChoices: choices,
         definitions: REPORT_DEFINITIONS,
         revenue: {
           gross, refunds, net: gross - refunds,
@@ -311,7 +318,7 @@ export const resolvers = {
           select: {
             id: true, status: true, price: true, discountPercent: true, sessionsPerPeriod: true, currentPeriodStart: true, currentPeriodEnd: true,
             pausedFrom: true, pausedUntil: true, cancelRequestedAt: true, endsAt: true, pastDueSince: true,
-            plan: { select: { id: true, name: true } }, pendingPlan: { select: { id: true, name: true } }, student: { select: { id: true, firstName: true } },
+            plan: { select: { id: true, name: true, programId: true } }, pendingPlan: { select: { id: true, name: true } }, student: { select: { id: true, firstName: true } },
           },
         }) : null,
         billing ? prisma.creditGrant.findMany({
@@ -351,7 +358,14 @@ export const resolvers = {
         }),
       ])
 
+      // Times on the family page are shown in the home centre's zone (or the first centre's).
+      const zone = head.primaryLocationId
+        ? (await prisma.location.findUnique({ where: { id: head.primaryLocationId }, select: { timezone: true } }))?.timezone
+        : (await prisma.location.findFirst({ orderBy: { createdAt: 'asc' }, select: { timezone: true } }))?.timezone
+      const business = await prisma.business.findFirst({ select: { currency: true } })
+
       return {
+        timezone: zone || 'UTC', currency: business?.currency ?? 'USD',
         family, billing, memberships, grants, invoices, messages, tasks, reviews, upcoming,
         can: {
           manageBilling: billing,
