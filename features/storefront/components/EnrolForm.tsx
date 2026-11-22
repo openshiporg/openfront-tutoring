@@ -101,7 +101,15 @@ export function EnrolForm({ program, series, levels, currency, siblingDiscountPe
         {checkout ? (
           <section>
             <h2 style={{ fontSize: 24, marginBottom: 6 }}>Pay {money(total ?? 0, checkout.currency || currency)}</h2>
-            <p className="bp-muted" style={{ marginBottom: 18 }}>Your place is held while you pay.{checkout.newAccount ? ' We have created your family account and emailed you a link to set a password.' : ''}</p>
+            <p className="bp-muted" style={{ marginBottom: 14 }}>Your place is held while you pay.{checkout.newAccount ? ' We have created your family account and emailed you a link to set a password.' : ''}</p>
+            <table className="bp-table" style={{ marginBottom: 18 }}>
+              <tbody>
+                <tr><td>Subtotal</td><td className="num">{money(checkout.subtotal ?? 0, checkout.currency || currency)}</td></tr>
+                {checkout.discount ? <tr><td>Discount{form.promoCode ? ` (${form.promoCode.toUpperCase()})` : ''}</td><td className="num">−{money(checkout.discount, checkout.currency || currency)}</td></tr> : null}
+                <tr><td>Tax</td><td className="num">{money(checkout.tax ?? 0, checkout.currency || currency)}</td></tr>
+                <tr><td className="bp-strong">Total due today</td><td className="num bp-strong">{money(checkout.total ?? 0, checkout.currency || currency)}</td></tr>
+              </tbody>
+            </table>
             {note ? <div className="bp-notice" role="status" style={{ marginBottom: 12 }}>{note}</div> : null}
             <StripeConfirm clientSecret={checkout.clientSecret!} publishableKey={checkout.publishableKey!} label={`Pay ${money(total ?? 0, checkout.currency || currency)} and enrol`}
               settle={() => completeEnrolmentCheckoutAction(checkout.paymentSessionId!)}
@@ -137,10 +145,11 @@ export function EnrolForm({ program, series, levels, currency, siblingDiscountPe
               {mode === 'in_home' ? <label className="bp-field" style={{ marginTop: 14 }}><span>Home address</span><input className="bp-input" value={form.homeAddress} onChange={set('homeAddress')} required autoComplete="street-address" /></label> : null}
             </section>
 
-            {mode ? (
-              <section className="bp-stepblock">
-                <h2><i>3</i>{groupFormat && seriesHere.length ? 'Weekly times' : 'Preferred times'}</h2>
-                {groupFormat && seriesHere.length ? (
+            <section className="bp-stepblock">
+                <h2><i>3</i>{mode && groupFormat && seriesHere.length ? 'Class times' : 'Times'}</h2>
+                {!mode ? (
+                  <p className="bp-muted">{series.length ? `${program.name} runs as weekly classes. Choose where above to see the class times you can join.` : 'Choose where above. Session times are arranged with the centre after you enrol.'}</p>
+                ) : groupFormat && seriesHere.length ? (
                   <>
                     <p className="bp-small bp-muted" style={{ marginBottom: 10 }}>Pick up to {maxPicks}. We book these seats every week; you can also book extra sessions from your account.</p>
                     <div className="bp-choices is-stack">
@@ -153,13 +162,15 @@ export function EnrolForm({ program, series, levels, currency, siblingDiscountPe
                     </div>
                   </>
                 ) : (
-                  <label className="bp-field"><span>When suits you?</span><input className="bp-input" value={form.preferredTimes} onChange={set('preferredTimes')} placeholder="For example: Tuesdays and Thursdays after 4 PM" /><small className="bp-muted">We match a tutor to these times and confirm by email.</small></label>
+                  <>
+                    <p style={{ marginBottom: 12 }}>{series.length ? 'There are no weekly classes here yet. ' : ''}Session times are arranged with the centre after you enrol: tell us what suits you and we confirm by email.</p>
+                    <label className="bp-field"><span>When suits you? <small>(optional)</small></span><input className="bp-input" value={form.preferredTimes} onChange={set('preferredTimes')} placeholder="For example: Tuesdays and Thursdays after 4 PM" /></label>
+                  </>
                 )}
               </section>
-            ) : null}
 
             <section className="bp-stepblock">
-              <h2><i>{mode ? 4 : 3}</i>Student{viewer ? '' : ' and you'}</h2>
+              <h2><i>4</i>Student{viewer ? '' : ' and you'}</h2>
               {students.length ? (
                 <div className="bp-choices" style={{ marginBottom: 14 }}>
                   {students.map((s) => <label className="bp-choice" key={s.id}><input type="radio" name="student" checked={studentChoice === s.id} onChange={() => setStudentChoice(s.id)} /><span><b>{s.firstName} {s.lastName}</b></span></label>)}
@@ -222,7 +233,7 @@ export function EnrolForm({ program, series, levels, currency, siblingDiscountPe
                   {checkout.tax ? (<><dt>Tax</dt><dd>{money(checkout.tax, checkout.currency || currency)}</dd></>) : null}
                   <dt>Due today</dt><dd className="bp-strong">{money(checkout.total ?? 0, checkout.currency || currency)}</dd>
                 </>
-              ) : <><dt>Due today</dt><dd>{money(chosen.price + chosen.fee, currency)}<small className="bp-muted" style={{ display: 'block', fontWeight: 400 }}>before any discount or tax</small></dd></>}
+              ) : <><dt>Estimate</dt><dd>{money(chosen.price + chosen.fee, currency)}<small className="bp-muted" style={{ display: 'block', fontWeight: 400 }}>The exact total, with any discount and tax, is shown before you pay.</small></dd></>}
             </dl>
           ) : <p className="bp-muted">Choose a plan.</p>}
           {kind === 'plan' ? <p className="bp-small bp-muted" style={{ marginTop: 12 }}>Billed monthly from today. Cancel with notice from your account.</p> : null}

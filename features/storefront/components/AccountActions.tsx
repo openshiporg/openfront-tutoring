@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useActionState, useEffect, useState, useTransition } from 'react'
 import {
   bookSessionAction, cancelAssessmentAction, cancelBookingAction, createSetupIntentAction, joinWaitlistAction, leaveWaitlistAction,
-  previewCancellationAction, purchasePackageAction, rescheduleBookingAction, setDefaultPaymentMethodAction, type ActionState, type PaymentStart,
+  previewCancellationAction, purchasePackageAction, rescheduleBookingAction, requestMembershipCancelAction, requestMembershipPauseAction, setDefaultPaymentMethodAction, type ActionState, type PaymentStart,
 } from '../lib/actions'
 import { completePaymentAction } from '../lib/actions'
 import { StripeConfirm } from './StripeConfirm'
@@ -178,4 +178,62 @@ export function SaveCard({ current }: { current: string | null }) {
       <div><button className="bp-btn is-small" type="button" onClick={open} disabled={busy}>{busy ? 'Opening…' : current ? 'Replace card' : 'Add a card'}</button></div>
     </div>
   )
+}
+
+const isoDay = (d: Date) => d.toISOString().slice(0, 10)
+const addDays = (d: Date, n: number) => new Date(d.getTime() + n * 86400000)
+
+/** Guardian pause request. Limits come from settings; the server enforces them again. */
+export function PauseMembership({ membershipId, minDays, maxDays, perYear }: { membershipId: string; minDays: number; maxDays: number; perYear: number }) {
+  const [open, setOpen] = useState(false)
+  const [state, action, pending] = useActionState(requestMembershipPauseAction, initial)
+  const [key] = useState(uuid)
+  const tomorrow = addDays(new Date(), 1)
+  const [from, setFrom] = useState(isoDay(addDays(tomorrow, 6)))
+  const [until, setUntil] = useState(isoDay(addDays(tomorrow, 6 + minDays - 1)))
+  const days = Math.round((new Date(until).getTime() - new Date(from).getTime()) / 86400000) + 1
+  if (state.ok) return <span className="bp-status" role="status">Paused from {dateOnlyLocal(state.data?.from)} to {dateOnlyLocal(state.data?.until)}.{state.data?.nextBillDate ? ` Next bill ${dateOnlyLocal(state.data.nextBillDate)}.` : ''}</span>
+  if (!open) return <button type="button" className="bp-btn is-small" onClick={() => setOpen(true)}>Pause</button>
+  return (
+    <form action={action} className="bp-inline-panel">
+      <input type="hidden" name="membershipId" value={membershipId} />
+      <input type="hidden" name="idempotencyKey" value={key} />
+      <p className="bp-small">Pause for {minDays} to {maxDays} days{perYear ? `, ${perYear === 1 ? 'once' : `${perYear} times`} in 12 months` : ''}. No sessions are booked and you are not billed while paused.</p>
+      <div className="bp-row">
+        <label className="bp-field"><span>First day</span><input className="bp-input" type="date" name="from" value={from} min={isoDay(tomorrow)} onChange={(e) => setFrom(e.target.value)} required /></label>
+        <label className="bp-field"><span>Last day</span><input className="bp-input" type="date" name="until" value={until} min={from} max={isoDay(addDays(new Date(from), maxDays - 1))} onChange={(e) => setUntil(e.target.value)} required /></label>
+      </div>
+      <p className="bp-small">{days > 0 ? `${days} days` : ''}</p>
+      {state.error ? <div className="bp-notice is-error" role="alert">{state.error}</div> : null}
+      <div className="bp-row">
+        <button className="bp-btn is-small is-dark" type="submit" disabled={pending || days < minDays || days > maxDays}>{pending ? 'Sending…' : 'Pause membership'}</button>
+        <button className="bp-btn is-small is-link" type="button" onClick={() => setOpen(false)}>Never mind</button>
+      </div>
+    </form>
+  )
+}
+
+/** Give notice to end a membership. Notice length comes from settings. */
+export function CancelMembership({ membershipId, noticeDays }: { membershipId: string; noticeDays: number }) {
+  const [open, setOpen] = useState(false)
+  const [state, action, pending] = useActionState(requestMembershipCancelAction, initial)
+  const [key] = useState(uuid)
+  if (state.ok) return <span className="bp-status" role="status">Notice given. The membership ends on {dateOnlyLocal(state.data?.endsAt)}.</span>
+  if (!open) return <button type="button" className="bp-btn is-small" onClick={() => setOpen(true)}>Give notice</button>
+  return (
+    <form action={action} className="bp-inline-panel">
+      <input type="hidden" name="membershipId" value={membershipId} />
+      <input type="hidden" name="idempotencyKey" value={key} />
+      <p className="bp-small">{noticeDays ? `Memberships end ${noticeDays} days after notice. Sessions and billing continue until then.` : 'The membership ends at the end of the current period.'}</p>
+      {state.error ? <div className="bp-notice is-error" role="alert">{state.error}</div> : null}
+      <div className="bp-row">
+        <button className="bp-btn is-small is-dark" type="submit" disabled={pending}>{pending ? 'Sending…' : 'Confirm notice'}</button>
+        <button className="bp-btn is-small is-link" type="button" onClick={() => setOpen(false)}>Keep membership</button>
+      </div>
+    </form>
+  )
+}
+
+function dateOnlyLocal(iso?: string | null) {
+  return iso ? new Date(iso).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' }) : ''
 }

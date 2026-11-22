@@ -2,7 +2,7 @@ import Link from 'next/link'
 import { notFound, redirect } from 'next/navigation'
 import { getBusiness, getCancellationPreview, getMyBooking, getMyBookings, getMyCredits, getMyFamily, getMyInvoice, getMyInvoices, getMyStudent, getOpenSessions, getViewer } from '../lib/data'
 import { AccountNav } from '../components/AccountNav'
-import { BookSeat, BuyPackage, CancelAssessment, CancelBooking, LeaveWaitlist, MoveBooking, SaveCard } from '../components/AccountActions'
+import { BookSeat, BuyPackage, CancelAssessment, CancelBooking, CancelMembership, PauseMembership, LeaveWaitlist, MoveBooking, SaveCard } from '../components/AccountActions'
 import { PayInvoice } from '../components/PayInvoice'
 import { Empty, LoadError, PageHead } from '../components/states'
 import { MODE_LABEL, dateLong, dateOnly, dayKey, hoursFromMinutes, label, money, statusText, time, when } from '../lib/format'
@@ -105,15 +105,7 @@ export async function AccountOverviewPage() {
               ) : <Empty title="No students yet">Book an <Link className="bp-accent" href="/assessment">assessment</Link> to add your child.</Empty>}
             </div>
 
-            {f.memberships.length ? (
-              <div className="bp-account-section">
-                <h2>Memberships</h2>
-                <table className="bp-table">
-                  <thead><tr><th>Plan</th><th>Student</th><th>Status</th><th className="num">Monthly</th><th>Renews</th></tr></thead>
-                  <tbody>{f.memberships.map((m: any) => <tr key={m.id}><td>{m.planName}<div className="bp-small bp-muted">{m.programName}</div></td><td>{m.studentName}</td><td className={['past_due', 'suspended'].includes(m.status) ? 'bp-status is-warn' : ''}>{statusText(m.status)}</td><td className="num">{money(m.price, currency)}</td><td>{m.currentPeriodEnd ? dateOnly(m.currentPeriodEnd) : ''}</td></tr>)}</tbody>
-                </table>
-              </div>
-            ) : null}
+            {f.memberships.length ? <Memberships list={f.memberships} settings={fam.settings} currency={currency} /> : null}
           </>
         )}
       </AccountShell>
@@ -306,7 +298,7 @@ export async function AccountCreditsPage() {
 // ---------------------------------------------------------------- billing (A2)
 export async function AccountBillingPage() {
   const { fam } = await guardian('/account/billing')
-  const r = await getMyInvoices()
+  const [r, business] = await Promise.all([getMyInvoices(), getBusiness()])
   const rows: any[] = r.value ?? []
   const open = rows.filter((i) => ['open', 'partially_paid'].includes(i.status))
   return (
@@ -330,6 +322,7 @@ export async function AccountBillingPage() {
                 </div>
               </div>
             ) : <div className="bp-notice is-ok" style={{ marginBottom: 24 }}>Nothing to pay right now.</div>}
+            {fam.family.memberships.length ? <Memberships list={fam.family.memberships} settings={fam.settings} currency={business?.currency || 'USD'} /> : null}
             <div className="bp-account-section">
               <h2>Invoices</h2>
               {rows.length ? (
@@ -597,5 +590,47 @@ export async function AccountBookingPage({ params }: { params: Promise<{ id: str
         </div>
       </AccountShell>
     </>
+  )
+}
+
+// ---------------------------------------------------------------- memberships (A18, A19)
+function Memberships({ list, settings, currency }: { list: any[]; settings: any; currency: string }) {
+  const min = settings?.pauseMinDays ?? 14
+  const max = settings?.pauseMaxDays ?? 28
+  const perYear = settings?.pausesPerYear ?? 1
+  const notice = settings?.membershipCancelNoticeDays ?? 30
+  const yearAgo = Date.now() - 365 * 86400000
+  return (
+    <div className="bp-account-section">
+      <h2>Memberships</h2>
+      <p className="bp-small bp-muted" style={{ marginBottom: 12 }}>
+        You can pause a membership for {min} to {max} days{perYear ? `, ${perYear === 1 ? 'once' : `${perYear} times`} in 12 months` : ''}, or give {notice} days&apos; notice to end it. To change plan, <Link className="bp-accent" href="/contact">ask us</Link>.
+      </p>
+      <div className="bp-sessions">
+        {list.map((m) => {
+          const ending = Boolean(m.cancelRequestedAt || m.endsAt)
+          const paused = m.pausedFrom && m.pausedUntil && new Date(m.pausedUntil).getTime() > Date.now()
+          const pausedRecently = perYear <= 1 && m.lastPauseAt && new Date(m.lastPauseAt).getTime() > yearAgo
+          const live = ['active', 'past_due', 'trialing'].includes(m.status)
+          return (
+            <div className="bp-session" key={m.id}>
+              <div className="bp-session-time">{money(m.price, currency)}<small>a month</small></div>
+              <div>
+                <h3>{m.planName}</h3>
+                <p>{[m.programName, m.studentName, statusText(m.status)].filter(Boolean).join(' · ')}</p>
+                <p>
+                  {ending && m.endsAt ? `Ends ${dateOnly(m.endsAt)}.` : m.currentPeriodEnd ? `Next bill ${dateOnly(m.currentPeriodEnd)}.` : ''}
+                  {paused ? ` Paused ${dateOnly(m.pausedFrom)} to ${dateOnly(m.pausedUntil)}.` : ''}
+                </p>
+              </div>
+              <div className="bp-session-actions">
+                {live && !ending && !paused && !pausedRecently ? <PauseMembership membershipId={m.id} minDays={min} maxDays={max} perYear={perYear} /> : null}
+                {live && !ending ? <CancelMembership membershipId={m.id} noticeDays={notice} /> : null}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
   )
 }

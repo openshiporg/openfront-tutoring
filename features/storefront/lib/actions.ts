@@ -53,6 +53,21 @@ export async function cancelAssessmentAction(_: ActionState, f: FormData): Promi
   return { ok: true, error: null, data: r.data }
 }
 
+export async function requestMembershipPauseAction(_: ActionState, f: FormData): Promise<ActionState> {
+  if (!str(f, 'from') || !str(f, 'until')) return { ok: false, error: 'Choose the first and last day of the pause.' }
+  const r = await command('requestMembershipPause', `mutation($m: ID!, $f: String!, $u: String!, $k: String) { requestMembershipPause(membershipId: $m, from: $f, until: $u, idempotencyKey: $k) { ${CR} } }`, { m: str(f, 'membershipId'), f: str(f, 'from'), u: str(f, 'until'), k: key(f) })
+  if (!r.success) return { ok: false, error: r.error }
+  revalidatePath('/account', 'layout')
+  return { ok: true, error: null, data: r.data }
+}
+
+export async function requestMembershipCancelAction(_: ActionState, f: FormData): Promise<ActionState> {
+  const r = await command('requestMembershipCancel', `mutation($m: ID!, $k: String) { requestMembershipCancel(membershipId: $m, idempotencyKey: $k) { ${CR} } }`, { m: str(f, 'membershipId'), k: key(f) })
+  if (!r.success) return { ok: false, error: r.error }
+  revalidatePath('/account', 'layout')
+  return { ok: true, error: null, data: r.data }
+}
+
 export async function rescheduleAssessmentAction(_: ActionState, f: FormData): Promise<ActionState> {
   if (!str(f, 'startsAt')) return { ok: false, error: 'Choose a new time.' }
   const r = await command('rescheduleAssessment', `mutation($a: ID!, $s: String!, $t: ID!, $k: String) { rescheduleAssessment(assessmentId: $a, startsAt: $s, tutorId: $t, idempotencyKey: $k) { ${CR} } }`, { a: str(f, 'assessmentId'), s: str(f, 'startsAt'), t: str(f, 'tutorId'), k: key(f) })

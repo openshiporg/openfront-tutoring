@@ -495,12 +495,12 @@ export const resolvers = {
             minutesAvailable: perStudent.get(s.id) ?? 0,
             enrolments: s.enrolments.map((e: any) => ({ id: e.id, status: e.status, mode: e.mode, fundingType: e.fundingType, program: e.program, tutor: e.tutor ? { id: e.tutor.id, displayName: e.tutor.displayName, slug: e.tutor.publicProfile ? e.tutor.slug : null } : null, trialAttendedAt: e.trialAttendedAt, tutorConfirmedAt: e.tutorConfirmedAt, rematchCount: e.rematchCount })),
           })),
-          memberships: family.memberships.map((m: any) => ({ id: m.id, status: m.status, price: m.price, planName: m.plan?.name, programName: m.plan?.program?.name, studentName: m.student?.firstName, currentPeriodEnd: m.currentPeriodEnd, cancelRequestedAt: m.cancelRequestedAt, endsAt: m.endsAt, pausedFrom: m.pausedFrom, pausedUntil: m.pausedUntil, pauseRequestedFrom: m.pauseRequestedFrom })),
+          memberships: family.memberships.map((m: any) => ({ id: m.id, status: m.status, price: m.price, planName: m.plan?.name, programName: m.plan?.program?.name, studentName: m.student?.firstName, currentPeriodEnd: m.currentPeriodEnd, cancelRequestedAt: m.cancelRequestedAt, endsAt: m.endsAt, pausedFrom: m.pausedFrom, pausedUntil: m.pausedUntil, pauseRequestedFrom: m.pauseRequestedFrom, lastPauseAt: m.lastPauseAt ?? null })),
           upcoming: nextBookings.map((b: any) => ({ id: b.id, status: b.status, student: b.student, session: sessionOut(b.session) })),
           assessments: assessments.map((a: any) => ({ id: a.id, scheduledAt: a.scheduledAt, minutes: a.minutes, mode: a.mode, program: a.program, location: a.location, student: a.student })),
           alerts,
         },
-        settings: { pauseMinDays: settings?.pauseMinDays ?? 14, pauseMaxDays: settings?.pauseMaxDays ?? 28, membershipCancelNoticeDays: settings?.membershipCancelNoticeDays ?? 30 },
+        settings: { pauseMinDays: settings?.pauseMinDays ?? 14, pauseMaxDays: settings?.pauseMaxDays ?? 28, membershipCancelNoticeDays: settings?.membershipCancelNoticeDays ?? 30, pausesPerYear: settings?.pausesPerYear ?? 1 },
       }
     },
 
