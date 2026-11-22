@@ -76,13 +76,13 @@ export async function EnrolConfirmedPage({ params }: { params: Promise<{ id: str
               <>
                 <hr className="bp-sep" />
                 <h3>Booked sessions</h3>
-                <ul className="bp-list" style={{ marginTop: 6 }}>{e.upcoming.map((b: any) => <li key={b.id}>{when(b.startsAt, b.endsAt, e.timezone)}</li>)}</ul>
+                <ul className="bp-list is-text" style={{ marginTop: 6 }}>{e.upcoming.map((b: any) => <li key={b.id}>{when(b.startsAt, b.endsAt, e.timezone)}</li>)}</ul>
               </>
             ) : null}
             {inv?.missedSeats ? <div className="bp-notice" style={{ marginTop: 14 }}>{inv.missedSeats} weekly seat{inv.missedSeats === 1 ? ' was' : 's were'} already full. Our team will be in touch to find another time.</div> : null}
             <hr className="bp-sep" />
             <h3>What happens next</h3>
-            <ul className="bp-list" style={{ marginTop: 6 }}>
+            <ul className="bp-list is-text" style={{ marginTop: 6 }}>
               {e.status === 'pending_match' ? <li>We are choosing the tutor who fits best and will email you within two working days.</li> : null}
               {e.upcoming.length ? <li>Your sessions are in your schedule. Book extra sessions or cancel there too.</li> : <li>Book your first sessions from <Link className="bp-accent" href="/schedule">the class schedule</Link> or your account.</li>}
               <li>A receipt is on its way by email.</li>

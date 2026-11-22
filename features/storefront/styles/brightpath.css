@@ -169,6 +169,7 @@ a.bp-card:hover .bp-card-arrow { color: var(--bp-orange); }
 .bp-list { list-style: none; margin: 0; padding: 0; }
 .bp-list li { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--bp-line-soft); font-size: 16px; }
 .bp-list li:last-child { border-bottom: 0; }
+.bp-list.is-text li { display: block; }
 .bp-list svg { width: 18px; height: 18px; flex: none; margin-top: 3px; color: var(--bp-orange); }
 .bp-dl { display: grid; grid-template-columns: max-content 1fr; gap: 8px 20px; margin: 0; font-size: 15px; }
 .bp-dl dt { color: var(--bp-soft); }

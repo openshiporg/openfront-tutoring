@@ -67,7 +67,7 @@ export async function AssessmentConfirmedPage({ params }: { params: Promise<{ id
             </dl>
             <hr className="bp-sep" />
             <h3>What happens next</h3>
-            <ul className="bp-list" style={{ marginTop: 6 }}>
+            <ul className="bp-list is-text" style={{ marginTop: 6 }}>
               <li>We have emailed the details{viewer ? ` to ${viewer.email}` : ''}. New families also get a link to set a password.</li>
               <li>{a.mode === 'online' ? 'The video link appears in your account 10 minutes before the start.' : 'Please arrive five minutes early; the assessor will meet you at the front desk.'}</li>
               <li>Afterwards we share the results and a recommended plan in your account.</li>
