@@ -93,17 +93,15 @@ export async function startInvoicePayment(prisma: any, input: { invoiceId: strin
   if (amount <= 0) throw new CommandError('This invoice has nothing to pay.')
   const currency = (invoice.currency || 'USD').toUpperCase()
 
-  // Reuse an open on-session attempt for the same amount (refresh, double click).
-  if (!input.offSession) {
-    const open = await prisma.paymentSession.findFirst({ where: { invoiceId: invoice.id, amount, currencyCode: currency, offSession: false, status: { in: ['pending', 'requires_action'] }, providerPaymentId: { not: '' } }, orderBy: { createdAt: 'desc' } })
-    if (open?.clientSecret) return { paymentSessionId: open.id, clientSecret: open.clientSecret, publishableKey: keys.publishableKey, amount, currency, status: open.status, invoiceId: invoice.id }
-  }
-
   const customer = await ensureCustomer(prisma, keys, invoice.familyId)
-  const attempt = input.attemptKey || `${Date.now()}`
   const session = await transaction(prisma, async (tx) => {
     await lockKey(tx, `invoice-pay:${invoice.id}`)
-    const keyHash = hash(`invoice:${invoice.id}:${amount}:${input.offSession ? 'off' : 'on'}:${attempt}`)
+    // Reuse an open on-session attempt for the same amount (refresh, double click, two tabs).
+    if (!input.offSession) {
+      const open = await tx.paymentSession.findFirst({ where: { invoiceId: invoice.id, amount, currencyCode: currency, offSession: false, status: { in: ['pending', 'requires_action'] }, createdAt: { gte: new Date(Date.now() - 23 * 3600_000) } }, orderBy: { createdAt: 'desc' } })
+      if (open) return open
+    }
+    const keyHash = hash(`invoice:${invoice.id}:${amount}:${input.offSession ? 'off' : 'on'}:${input.attemptKey || Date.now()}`)
     const existing = await tx.paymentSession.findUnique({ where: { idempotencyKeyHash: keyHash } })
     if (existing) return existing
     return tx.paymentSession.create({
@@ -116,7 +114,14 @@ export async function startInvoicePayment(prisma: any, input: { invoiceId: strin
       },
     })
   })
-  if (session.providerPaymentId) return { paymentSessionId: session.id, clientSecret: session.clientSecret || null, publishableKey: keys.publishableKey, amount, currency, status: session.status, invoiceId: invoice.id }
+  if (session.providerPaymentId && session.clientSecret && !input.offSession) {
+    if (input.saveCard && !(session.metadata as any)?.saveCard) await prisma.paymentSession.update({ where: { id: session.id }, data: { metadata: { ...(session.metadata as object), saveCard: true } } })
+    return { paymentSessionId: session.id, clientSecret: session.clientSecret, publishableKey: keys.publishableKey, amount, currency, status: session.status, invoiceId: invoice.id }
+  }
+  if (session.providerPaymentId) {
+    const settled = await refreshPaymentSession(prisma, session.id)
+    return { paymentSessionId: session.id, clientSecret: session.clientSecret || null, publishableKey: keys.publishableKey, amount, currency, status: settled.status, invoiceId: invoice.id }
+  }
 
   let pi: PaymentIntent
   try {

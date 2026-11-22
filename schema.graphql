@@ -7798,6 +7798,27 @@ type Mutation {
   cancelSession(sessionId: ID!, reason: String!, note: String, idempotencyKey: String): CommandResult!
   markSessionNeedsCover(sessionId: ID!, idempotencyKey: String): CommandResult!
   assignSubstitute(sessionId: ID!, tutorId: ID!, idempotencyKey: String): CommandResult!
+  submitEnquiry(data: JSON!, idempotencyKey: String): CommandResult!
+  bookAssessment(programId: ID!, mode: String!, locationId: ID, startsAt: String!, tutorId: ID!, subjectId: ID, studentId: ID, student: AssessmentStudentInput, guardian: AssessmentGuardianInput, notes: String, idempotencyKey: String): CommandResult!
+  staffBookAssessment(familyId: ID!, studentId: ID!, programId: ID!, mode: String!, locationId: ID, startsAt: String!, tutorId: ID!, subjectId: ID, kind: String, minutes: Int, waiveFee: Boolean, idempotencyKey: String): CommandResult!
+  cancelAssessment(assessmentId: ID!, reason: String, idempotencyKey: String): CommandResult!
+  rescheduleAssessment(assessmentId: ID!, startsAt: String!, tutorId: ID!, idempotencyKey: String): CommandResult!
+  startAssessment(assessmentId: ID!, idempotencyKey: String): CommandResult!
+  markAssessmentNoShow(assessmentId: ID!, idempotencyKey: String): CommandResult!
+  completeAssessment(assessmentId: ID!, summary: String, recommendation: String, results: JSON, recommendedPlanId: ID, recommendedPackageId: ID, recommendedSessionsPerWeek: Int, idempotencyKey: String): CommandResult!
+  transitionLead(leadId: ID!, to: String!, reason: String, idempotencyKey: String): CommandResult!
+  startEnrolmentCheckout(programId: ID!, planId: ID, packageId: ID, mode: String!, locationId: ID, seriesIds: [ID!], studentId: ID, student: CheckoutStudentInput, guardian: CheckoutGuardianInput, promoCode: String, learningPlanId: ID, homeAddress: String, preferredTimes: String, acceptPolicies: Boolean!, saveCard: Boolean, idempotencyKey: String): CommandResult!
+  completeEnrolmentCheckout(paymentSessionId: ID!): CommandResult!
+  cancelEnrolmentCheckout(enrollmentId: ID!): CommandResult!
+  purchasePackage(packageId: ID!, studentId: ID!, saveCard: Boolean, useSavedCard: Boolean, idempotencyKey: String): CommandResult!
+  payInvoice(invoiceId: ID!, saveCard: Boolean, useSavedCard: Boolean): CommandResult!
+  refreshPayment(paymentSessionId: ID!): CommandResult!
+  createSetupIntent: CommandResult!
+  setDefaultPaymentMethod(setupIntentId: ID!): CommandResult!
+  recordOfflinePayment(invoiceId: ID!, amount: Int!, method: String!, reference: String, idempotencyKey: String): CommandResult!
+  refundPayment(paymentId: ID!, amount: Int!, reason: String!, idempotencyKey: String): CommandResult!
+  issueCreditNote(invoiceId: ID!, amount: Int!, reason: String!, idempotencyKey: String): CommandResult!
+  voidInvoice(invoiceId: ID!, reason: String!): CommandResult!
 }
 
 union UserAuthenticationWithPasswordResult = UserAuthenticationWithPasswordSuccess | UserAuthenticationWithPasswordFailure
@@ -8022,6 +8043,7 @@ type Query {
   myStudent(id: ID!): JSON
   myUpcomingBookings(includePast: Boolean, studentId: ID): JSON
   myBooking(id: ID!): JSON
+  myAssessment(id: ID!): JSON
   myCredits: JSON
   myInvoices: JSON
   myInvoice(id: ID!): JSON
@@ -8182,4 +8204,30 @@ type CancellationPreview {
   makeUpExpiresAt: String
   excusedLeftThisMonth: Int!
   message: String!
+}
+
+input AssessmentGuardianInput {
+  name: String!
+  email: String!
+  phone: String
+}
+
+input AssessmentStudentInput {
+  firstName: String!
+  lastName: String
+  levelId: ID
+  school: String
+}
+
+input CheckoutGuardianInput {
+  name: String!
+  email: String!
+  phone: String
+}
+
+input CheckoutStudentInput {
+  firstName: String!
+  lastName: String
+  levelId: ID
+  school: String
 }

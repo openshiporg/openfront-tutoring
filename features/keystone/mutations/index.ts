@@ -3,6 +3,7 @@ import type { GraphQLSchema } from 'graphql';
 import redirectToInit from "./redirectToInit";
 import * as schedule from "./schedule";
 import * as assessments from "./assessments";
+import * as billing from "./billing";
 import * as storefrontQueries from "../queries/storefront";
 
 const graphql = String.raw;
@@ -15,7 +16,7 @@ const graphql = String.raw;
 const COMMAND_OVERRIDES = new Set(['createSessionSeries', 'createPayrollRun', 'createTutorApplication', 'updateStudent']);
 
 // Each module exports { typeDefs, resolvers }. Storefront read queries live in ../queries.
-const modules = [storefrontQueries, schedule, assessments];
+const modules = [storefrontQueries, schedule, assessments, billing];
 
 export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
   return mergeSchemas({

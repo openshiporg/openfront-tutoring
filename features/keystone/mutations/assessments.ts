@@ -4,15 +4,15 @@
  * guardian; staffBookAssessment is the front-desk version. Fees: an open invoice is created at
  * booking and paid through payInvoice; cancel ≥ the refund window refunds, later keeps (setting).
  */
-import { randomBytes } from 'node:crypto'
-import { runCommand, transition, recordChange, requireString, optionalString, requireDate, lockKey } from '../lib/command'
+import { runCommand, transition, recordChange, requireString, optionalString, requireDate } from '../lib/command'
 import { CommandError } from '../lib/errors'
 import { canAt, requireFlag, requireGuardianOf, guardianFamily, type Actor } from '../lib/actor'
-import { holdAssessmentSlot, customerRoleId, SLOT_TAKEN } from '../lib/assessments'
+import { holdAssessmentSlot, SLOT_TAKEN } from '../lib/assessments'
 import { createInvoice } from '../lib/invoices'
 import { getSettings, HOUR } from '../lib/settings'
 import { settleAssessmentFee } from '../lib/fees'
 import { processRefund } from '../lib/payments'
+import { guardianForCommand, studentForCommand, welcomeNewGuardian } from '../lib/accounts'
 
 const gql = String.raw
 
@@ -155,52 +155,9 @@ export const resolvers = {
       const startsAt = requireDate(args.startsAt, 'Time')
       const mode = String(args.mode)
       const locationId = mode === 'in_centre' ? (args.locationId ? String(args.locationId) : null) : null
-      let familyId: string
-      let studentId: string
-      let guardian: { userId: string; name: string; email: string; phone: string; isNew: boolean }
-
-      if (actor) {
-        familyId = await guardianFamily(tx, actor, true)
-        guardian = { userId: actor.userId, name: actor.name, email: actor.email, phone: '', isNew: false }
-      } else {
-        const g = args.guardian
-        if (!g) throw new CommandError('Enter your name and email.')
-        const email = requireString(g.email, 'Email', 200).toLowerCase()
-        if (!EMAIL.test(email)) throw new CommandError('Enter a valid email address.')
-        const name = requireString(g.name, 'Your name', 120)
-        await lockKey(tx, `signup:${email}`)
-        const taken = await tx.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } }, select: { id: true } })
-        if (taken) throw new CommandError('That email already has an account. Sign in to book, or use “Forgot password”.')
-        const user = await tx.user.create({
-          data: { name, email, phone: optionalString(g.phone, 40), password: randomBytes(24).toString('base64url'), role: { connect: { id: await customerRoleId(tx) } } },
-          select: { id: true },
-        })
-        const family = await tx.family.create({
-          data: { name: `${name.split(' ').slice(-1)[0] || name} family`, billingEmail: email, phone: optionalString(g.phone, 40), guardians: { connect: { id: user.id } }, ...(locationId ? { primaryLocation: { connect: { id: locationId } } } : {}) },
-          select: { id: true },
-        })
-        await recordChange(tx, { type: 'Family', id: family.id, to: 'active', actorId: user.id, reason: 'assessment booking' })
-        familyId = family.id
-        guardian = { userId: user.id, name, email, phone: optionalString(g.phone, 40), isNew: true }
-      }
-
-      if (args.studentId) {
-        const s = await tx.student.findUnique({ where: { id: String(args.studentId) }, select: { id: true, familyId: true } })
-        if (!s || s.familyId !== familyId) throw new CommandError('That student was not found.')
-        studentId = s.id
-      } else {
-        const st = args.student
-        if (!st) throw new CommandError('Enter the student’s name.')
-        const created = await tx.student.create({
-          data: {
-            family: { connect: { id: familyId } }, firstName: requireString(st.firstName, 'Student first name', 80), lastName: optionalString(st.lastName, 80) || guardian.name.split(' ').slice(-1)[0] || '',
-            school: optionalString(st.school, 160), ...(st.levelId ? { level: { connect: { id: String(st.levelId) } } } : {}), status: 'prospect',
-            createdBy: { connect: { id: guardian.userId } },
-          },
-          select: { id: true, firstName: true, lastName: true },
-        })
-        studentId = created.id
-      }
+      const guardian = await guardianForCommand(tx, actor, args.guardian, locationId, 'assessment booking')
+      const familyId = guardian.familyId
+      const studentId = await studentForCommand(tx, guardian, args.studentId, args.student)
 
       const slot = await holdAssessmentSlot(tx, { programId: String(args.programId), locationId, mode, startsAt, tutorId: String(args.tutorId) })
       const student = await tx.student.findUnique({ where: { id: studentId }, select: { firstName: true, lastName: true, levelId: true } })
@@ -220,14 +177,7 @@ export const resolvers = {
       }
       return {
         id: created.id, data,
-        after: async () => {
-          if (!guardian.isNew) return
-          // W1 step 3: the new guardian sets a password from an emailed link; sign them in now so they can pay and see the booking.
-          try { await context.sudo().graphql.run({ query: 'mutation($e: String!) { sendUserPasswordResetLink(email: $e) }', variables: { e: guardian.email } }) } catch (error) { console.error('bookAssessment: password link not sent', (error as Error)?.message) }
-          if (context.sessionStrategy && context.res) {
-            try { await context.sessionStrategy.start({ data: { listKey: 'User', itemId: guardian.userId }, context }) } catch (error) { console.error('bookAssessment: sign-in failed', (error as Error)?.message) }
-          }
-        },
+        after: () => welcomeNewGuardian(context, guardian, 'bookAssessment'),
       }
     }),
 
