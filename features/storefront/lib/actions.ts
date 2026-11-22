@@ -166,15 +166,23 @@ export async function loadAssessmentSlots(programId: string, mode: string, locat
 export type PaymentStart = { ok: boolean; error: string | null; clientSecret?: string | null; publishableKey?: string; amount?: number; currency?: string; status?: string; paymentSessionId?: string; invoiceId?: string }
 
 /** §5.9 payInvoice: opens (or reuses) the PaymentIntent for an open invoice's amount due. */
-export async function startInvoicePaymentAction(invoiceId: string, saveCard: boolean, idempotencyKey: string): Promise<PaymentStart> {
-  const r = await command('payInvoice', `mutation($i: ID!, $s: Boolean, $k: String) { payInvoice(invoiceId: $i, saveCard: $s, idempotencyKey: $k) { ${CR} } }`, { i: invoiceId, s: saveCard, k: idempotencyKey })
+export async function startInvoicePaymentAction(invoiceId: string, saveCard: boolean, _idempotencyKey?: string): Promise<PaymentStart> {
+  const r = await command('payInvoice', `mutation($i: ID!, $s: Boolean) { payInvoice(invoiceId: $i, saveCard: $s) { ${CR} } }`, { i: invoiceId, s: saveCard })
+  if (!r.success || !r.data) return { ok: false, error: r.error }
+  return { ok: true, error: null, ...(r.data as any) }
+}
+
+/** Charge the family's saved card (off-session). */
+export async function paySavedCardAction(invoiceId: string): Promise<PaymentStart> {
+  const r = await command('payInvoice', `mutation($i: ID!) { payInvoice(invoiceId: $i, useSavedCard: true) { ${CR} } }`, { i: invoiceId })
+  revalidatePath('/account', 'layout')
   if (!r.success || !r.data) return { ok: false, error: r.error }
   return { ok: true, error: null, ...(r.data as any) }
 }
 
 /** After Stripe.js confirms: the server reads the PaymentIntent itself and settles (never trusts the browser). */
-export async function completePaymentAction(paymentSessionId: string, invoiceId: string): Promise<ActionState> {
-  const r = await command('payInvoice', `mutation($i: ID!, $p: ID, $k: String) { payInvoice(invoiceId: $i, paymentSessionId: $p, idempotencyKey: $k) { ${CR} } }`, { i: invoiceId, p: paymentSessionId, k: `complete:${paymentSessionId}` })
+export async function completePaymentAction(paymentSessionId: string, _invoiceId?: string): Promise<ActionState> {
+  const r = await command('refreshPayment', `mutation($p: ID!) { refreshPayment(paymentSessionId: $p) { ${CR} } }`, { p: paymentSessionId })
   revalidatePath('/account', 'layout')
   return r.success ? { ok: true, error: null, data: r.data } : { ok: false, error: r.error }
 }
