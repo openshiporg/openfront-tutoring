@@ -11,7 +11,7 @@ const LINKS = [
   { href: '/account/progress', label: 'Progress' },
   { href: '/account/credits', label: 'Hours and packages' },
   { href: '/account/billing', label: 'Billing' },
-  { href: '/account/settings', label: 'Family and card' },
+  { href: '/account/profile', label: 'Profile and card' },
 ]
 
 export function AccountNav() {

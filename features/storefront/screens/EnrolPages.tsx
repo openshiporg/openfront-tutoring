@@ -109,3 +109,38 @@ export async function EnrolConfirmedPage({ params }: { params: Promise<{ id: str
     </>
   )
 }
+
+/** Resume payment for a held place (pending_payment enrolment), e.g. after closing the tab mid-checkout. */
+export async function EnrolCheckoutPage({ searchParams }: { searchParams: SP }) {
+  const id = one((await searchParams).enrolment)
+  if (!(await getViewer())) redirect(`/account/sign-in?next=${encodeURIComponent(`/enrol/checkout?enrolment=${id}`)}`)
+  if (!id) redirect('/programs')
+  const e = (await getMyEnrolment(id)).value
+  if (!e) notFound()
+  if (e.status !== 'pending_payment') redirect(`/enrol/confirmed/${e.id}`)
+  const inv = e.invoice
+  const due = inv ? inv.total - inv.amountPaid : 0
+  return (
+    <>
+      <PageHead title="Checkout" lead={`${e.program.name} for ${e.student.firstName}. Your place is held until it is paid.`} />
+      <section className="bp-body">
+        <div className="bp-wrap bp-grid-2">
+          <div className="bp-panel">
+            <dl className="bp-dl">
+              <dt>Program</dt><dd>{e.program.name}</dd>
+              <dt>Where</dt><dd>{e.location?.name ?? MODE_LABEL[e.mode]}</dd>
+              {e.membership ? (<><dt>Plan</dt><dd>{e.membership.planName} · {money(e.membership.price, inv?.currency || 'USD')}/month</dd></>) : null}
+              {e.studentPackage ? (<><dt>Package</dt><dd>{e.studentPackage.name} · {e.studentPackage.hours} hours</dd></>) : null}
+              {inv ? (<><dt>Invoice</dt><dd>{inv.number}</dd><dt>Due today</dt><dd>{money(due, inv.currency)}</dd></>) : null}
+            </dl>
+          </div>
+          <aside className="bp-sticky">
+            <div className="bp-panel">
+              {inv && due > 0 ? <PayInvoice invoiceId={inv.id} amount={due} currency={inv.currency} label={`Pay ${money(due, inv.currency)} and enrol`} /> : <Link className="bp-btn is-primary" href={`/enrol/confirmed/${e.id}`}>Continue</Link>}
+            </div>
+          </aside>
+        </div>
+      </section>
+    </>
+  )
+}

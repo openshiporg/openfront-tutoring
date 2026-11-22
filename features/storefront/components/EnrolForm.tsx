@@ -62,6 +62,7 @@ export function EnrolForm({ program, series, levels, currency, siblingDiscountPe
   const [error, setError] = useState<string | null>(null)
   const [checkout, setCheckout] = useState<CheckoutStart | null>(null)
   const [note, setNote] = useState<string | null>(null)
+  const [held, setHeld] = useState<string | null>(null)
 
   const signInHref = `/account/sign-in?next=${encodeURIComponent(`/enrol/${program.slug}`)}`
   const ready = Boolean(chosen && mode && accept && (studentChoice !== 'new' || form.firstName) && (viewer || (form.name && form.email)) && (mode !== 'in_home' || form.homeAddress))
@@ -81,7 +82,12 @@ export function EnrolForm({ program, series, levels, currency, siblingDiscountPe
       homeAddress: form.homeAddress, preferredTimes: form.preferredTimes, acceptPolicies: accept, saveCard, idempotencyKey,
     })
     setBusy(false)
-    if (!r.ok) { setError(r.error); if (r.enrollmentId) router.refresh(); return }
+    if (!r.ok) {
+      // The place is held (enrolment + invoice written) but the card step could not open: pay from checkout later.
+      setError(r.enrollmentId ? `${r.error} Your place is held; you can pay from checkout once card payments are available.` : r.error)
+      if (r.enrollmentId) setHeld(r.enrollmentId)
+      return
+    }
     if (r.status === 'captured' || r.invoiceStatus === 'paid') { router.push(`/enrol/confirmed/${r.enrollmentId}`); return }
     if (!r.clientSecret || !r.publishableKey) { setError('Card payments are not fully set up yet. Your place is held; please call us to pay.'); return }
     setCheckout(r)
@@ -193,6 +199,7 @@ export function EnrolForm({ program, series, levels, currency, siblingDiscountPe
                 {/already has an account|sign in/i.test(error) ? <div style={{ marginTop: 8 }}><Link className="bp-btn is-small is-dark" href={signInHref}>Sign in</Link> <Link className="bp-btn is-link" href="/account/reset">Forgot password</Link></div> : null}
               </div>
             ) : null}
+            {held ? <p style={{ marginBottom: 12 }}><Link className="bp-accent" href={`/enrol/checkout?enrolment=${held}`}>Go to checkout for this place</Link></p> : null}
             <button className="bp-btn is-primary" type="submit" disabled={!ready || busy}>{busy ? 'Holding your place…' : 'Continue to payment'}{busy ? null : <ArrowRight />}</button>
           </form>
         )}

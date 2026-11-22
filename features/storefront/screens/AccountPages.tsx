@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import { notFound, redirect } from 'next/navigation'
-import { getBusiness, getMyBookings, getMyCredits, getMyFamily, getMyInvoice, getMyInvoices, getMyStudent, getOpenSessions, getViewer } from '../lib/data'
+import { getBusiness, getCancellationPreview, getMyBooking, getMyBookings, getMyCredits, getMyFamily, getMyInvoice, getMyInvoices, getMyStudent, getOpenSessions, getViewer } from '../lib/data'
 import { AccountNav } from '../components/AccountNav'
 import { BookSeat, BuyPackage, CancelAssessment, CancelBooking, LeaveWaitlist, MoveBooking, SaveCard } from '../components/AccountActions'
 import { PayInvoice } from '../components/PayInvoice'
@@ -169,7 +169,7 @@ export async function AccountSchedulePage({ searchParams }: { searchParams: SP }
               {(past ? v.past : v.upcoming).length ? (
                 <div className="bp-sessions">
                   {(past ? v.past : v.upcoming).map((b: any) => (
-                    <SessionRow key={b.id} s={b.session} tz={tz} sub={<>{b.student?.firstName} · {statusText(b.status)}</>}>
+                    <SessionRow key={b.id} s={b.session} tz={tz} sub={<>{b.student?.firstName} · {statusText(b.status)} · <Link className="bp-accent" href={`/account/bookings/${b.id}`}>Details</Link></>}>
                       {b.joinUrl ? <a className="bp-btn is-small is-primary" href={b.joinUrl} target="_blank" rel="noreferrer">Join</a> : null}
                       {!past && b.status === 'booked' ? (
                         <>
@@ -529,12 +529,12 @@ export async function AccountPlanPage({ params, searchParams }: { params: Promis
 }
 
 // ---------------------------------------------------------------- family and card
-export async function AccountSettingsPage() {
-  const { viewer, fam } = await guardian('/account/settings')
+export async function AccountProfilePage() {
+  const { viewer, fam } = await guardian('/account/profile')
   const f = fam?.family
   return (
     <>
-      <PageHead title="Family and card" />
+      <PageHead title="Profile" />
       <AccountShell>
         {!f ? <NoFamily isStaff={Boolean(fam?.user?.isStaff)} /> : (
           <>
@@ -556,6 +556,45 @@ export async function AccountSettingsPage() {
             </div>
           </>
         )}
+      </AccountShell>
+    </>
+  )
+}
+
+// ---------------------------------------------------------------- booking detail (A6, A7)
+export async function AccountBookingPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params
+  await guardian(`/account/bookings/${id}`)
+  const b = (await getMyBooking(id)).value
+  if (!b) notFound()
+  const s = b.session
+  const tz = s.location?.timezone || 'America/Chicago'
+  const upcoming = b.status === 'booked' && new Date(s.startsAt).getTime() > Date.now()
+  const [preview, alts] = upcoming ? await Promise.all([getCancellationPreview(b.id), s.program?.id ? getOpenSessions({ programId: s.program.id }) : Promise.resolve({ value: null })]) : [null, null]
+  const options = ((alts as any)?.value?.sessions ?? []).filter((x: any) => x.id !== s.id && x.seatsLeft > 0 && x.mode === s.mode).slice(0, 20).map((x: any) => ({ id: x.id, startsAt: x.startsAt, seatsLeft: x.seatsLeft, label: x.location?.name ?? MODE_LABEL[x.mode] }))
+  return (
+    <>
+      <PageHead title={s.program?.name ?? 'Session'} lead={`${b.student.firstName} · ${statusText(b.status)}`} crumbs={[{ href: '/account/schedule', label: 'Schedule' }]} />
+      <AccountShell>
+        <div className="bp-panel">
+          <dl className="bp-dl">
+            <dt>When</dt><dd>{when(s.startsAt, s.endsAt, tz)}</dd>
+            <dt>Where</dt><dd>{s.location ? `${s.location.name}${s.room ? `, ${s.room.name}` : ''}` : MODE_LABEL[s.mode]}</dd>
+            {s.tutor ? (<><dt>Tutor</dt><dd>{s.tutor.slug ? <Link className="bp-accent" href={`/tutors/${s.tutor.slug}`}>{s.tutor.displayName}</Link> : s.tutor.displayName}</dd></>) : null}
+            <dt>Paid with</dt><dd>{b.funding ? (b.funding.kind === 'pay_as_you_go' ? 'Pay as you go' : `${label(b.funding.kind)} credit${b.funding.program ? `, ${b.funding.program}` : ''}`) : 'Included'}</dd>
+          </dl>
+          {b.reportId ? <p style={{ marginTop: 14 }}><Link className="bp-accent" href={`/account/progress?student=${b.student.id}`}>Read the session report</Link></p> : null}
+          {upcoming ? (
+            <>
+              <hr className="bp-sep" />
+              {preview?.value ? <div className="bp-notice is-accent" style={{ marginBottom: 14 }}>{preview.value.message}</div> : null}
+              <div className="bp-row" style={{ alignItems: 'flex-start' }}>
+                <MoveBooking bookingId={b.id} timezone={tz} options={options} />
+                <CancelBooking bookingId={b.id} />
+              </div>
+            </>
+          ) : null}
+        </div>
       </AccountShell>
     </>
   )
