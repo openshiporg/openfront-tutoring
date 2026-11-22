@@ -77,7 +77,7 @@ export function BookSeat({ sessionId, students, full, defaultStudent }: { sessio
   const [state, action, pending] = useActionState(full ? joinWaitlistAction : bookSessionAction, initial)
   const [key] = useState(uuid)
   if (state.ok) return <span className="bp-status" role="status">{full ? `On the waitlist${state.data?.position ? ` (#${state.data.position})` : ''}.` : 'Booked.'} <Link className="bp-accent" href="/account/schedule">See schedule</Link></span>
-  if (!students.length) return <Link className="bp-btn is-small" href="/enrol">Add a student</Link>
+  if (!students.length) return <Link className="bp-btn is-small" href="/programs">Enrol a student</Link>
   return (
     <form action={action} className="bp-row">
       <input type="hidden" name="sessionId" value={sessionId} />
