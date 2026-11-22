@@ -159,7 +159,7 @@ export function EnrolForm({ program, series, levels, currency, siblingDiscountPe
             ) : null}
 
             <section className="bp-stepblock">
-              <h2><i>4</i>Student{viewer ? '' : ' and you'}</h2>
+              <h2><i>{mode ? 4 : 3}</i>Student{viewer ? '' : ' and you'}</h2>
               {students.length ? (
                 <div className="bp-choices" style={{ marginBottom: 14 }}>
                   {students.map((s) => <label className="bp-choice" key={s.id}><input type="radio" name="student" checked={studentChoice === s.id} onChange={() => setStudentChoice(s.id)} /><span><b>{s.firstName} {s.lastName}</b></span></label>)}
@@ -190,7 +190,7 @@ export function EnrolForm({ program, series, levels, currency, siblingDiscountPe
             <section className="bp-stepblock">
               <label className="bp-field" style={{ maxWidth: 280 }}><span>Promo code <small>(optional)</small></span><input className="bp-input" value={form.promoCode} onChange={set('promoCode')} autoCapitalize="characters" /></label>
               <label className="bp-check" style={{ marginTop: 16 }}><input type="checkbox" checked={saveCard} onChange={(e) => setSaveCard(e.target.checked)} />{kind === 'plan' ? 'Save my card for the monthly payment' : 'Save my card for next time'}</label>
-              <label className="bp-check" style={{ marginTop: 10 }}><input type="checkbox" checked={accept} onChange={(e) => setAccept(e.target.checked)} required />I accept the <Link className="bp-accent" href="/policies" target="_blank">cancellation, make-up and billing policies</Link>.</label>
+              <label className="bp-check" style={{ marginTop: 10 }}><input type="checkbox" checked={accept} onChange={(e) => setAccept(e.target.checked)} required /><span>I accept the <Link className="bp-accent" href="/policies" target="_blank">cancellation, make-up and billing policies</Link>.</span></label>
             </section>
 
             {error ? (
