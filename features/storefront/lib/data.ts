@@ -77,3 +77,11 @@ export async function getMyAssessment(id: string) {
   const r = await gql<{ myAssessment: any }>('query($id:ID!){ myAssessment(id:$id) }', { id })
   return { value: r.data?.myAssessment ?? null, error: r.error }
 }
+export async function getEnrolmentOptions(programId: string) {
+  const r = await gql<{ enrolmentOptions: any }>('query($p:ID!){ enrolmentOptions(programId:$p) }', { p: programId })
+  return { value: r.data?.enrolmentOptions ?? null, error: r.error }
+}
+export async function getMyEnrolment(id: string) {
+  const r = await gql<{ myEnrolment: any }>('query($id:ID!){ myEnrolment(id:$id) }', { id })
+  return { value: r.data?.myEnrolment ?? null, error: r.error }
+}

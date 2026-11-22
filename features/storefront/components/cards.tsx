@@ -61,7 +61,7 @@ export function TutorCard({ t }: { t: any }) {
 export function PlanTile({ plan, currency, href, cta = 'Choose plan' }: { plan: any; currency: string; href?: string; cta?: string }) {
   return (
     <div className={`bp-price${plan.highlight ? ' is-highlight' : ''}`}>
-      {plan.highlight ? <span className="bp-price-tag">Most chosen</span> : null}
+      {plan.highlight ? <span className="bp-price-tag">Recommended</span> : null}
       <h3>{plan.name}</h3>
       <div className="bp-price-amount">{money(plan.price, currency)}<small> / month</small></div>
       <div className="bp-small bp-muted">

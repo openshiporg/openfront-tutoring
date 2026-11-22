@@ -19,6 +19,7 @@ export const typeDefs = gql`
     storefrontTutors(filter: JSON): JSON
     storefrontTutor(slug: String!): JSON
     storefrontPricing: JSON
+    enrolmentOptions(programId: ID!): JSON
     storefrontPolicies: JSON
     assessmentSlots(programId: ID!, locationId: ID, mode: String, from: String, to: String): JSON
     openSessions(programId: ID, locationId: ID, from: String, to: String): JSON
@@ -27,6 +28,7 @@ export const typeDefs = gql`
     myUpcomingBookings(includePast: Boolean, studentId: ID): JSON
     myBooking(id: ID!): JSON
     myAssessment(id: ID!): JSON
+    myEnrolment(id: ID!): JSON
     myCredits: JSON
     myInvoices: JSON
     myInvoice(id: ID!): JSON
@@ -210,6 +212,31 @@ export const resolvers = {
         reviews: reviews.map(reviewOut),
         siblingDiscountPercent: settings?.siblingDiscountPercent ?? 10,
       }
+    },
+
+    /** Weekly class times (open group series) a family can pick at enrolment, with seats left. */
+    async enrolmentOptions(_: unknown, { programId }: { programId: string }, context: Ctx) {
+      const prisma = context.sudo().prisma
+      const now = new Date()
+      const series = await prisma.sessionSeries.findMany({
+        where: { programId, status: 'active', enrollmentId: null, OR: [{ endDate: null }, { endDate: { gt: now } }], program: { status: 'published' } },
+        include: { location: { select: { id: true, name: true, slug: true, timezone: true, status: true } }, subject: { select: { name: true } }, tutor: { select: { displayName: true, publicProfile: true } } },
+        orderBy: [{ weekday: 'asc' }, { startMinute: 'asc' }],
+      })
+      const live = series.filter((s: any) => !s.location || s.location.status !== 'closed')
+      // Seats left = capacity minus booked seats on the next upcoming session of the series.
+      const out = await Promise.all(live.map(async (s: any) => {
+        const next = await prisma.session.findFirst({ where: { seriesId: s.id, status: 'scheduled', startsAt: { gt: now } }, orderBy: { startsAt: 'asc' }, select: { id: true, startsAt: true, capacity: true, _count: { select: { bookings: { where: { status: 'booked' } } } } } })
+        const capacity = next?.capacity ?? s.capacity
+        return {
+          id: s.id, weekday: s.weekday, startMinute: s.startMinute, minutes: s.minutes, mode: s.mode,
+          location: s.location ? { id: s.location.id, name: s.location.name, slug: s.location.slug } : null,
+          timezone: s.location?.timezone || (await defaultTimezone(prisma)), subject: s.subject?.name ?? null,
+          tutor: s.tutor?.publicProfile ? s.tutor.displayName : null,
+          capacity, seatsLeft: Math.max(0, capacity - (next?._count.bookings ?? 0)), nextStartsAt: next?.startsAt ?? null,
+        }
+      }))
+      return { series: out }
     },
 
     async storefrontLocations(_: unknown, __: unknown, context: Ctx) {
@@ -530,6 +557,35 @@ export const resolvers = {
       const b = await prisma.booking.findFirst({ where: { id, familyId }, include: { student: { select: { id: true, firstName: true, lastName: true } }, session: { include: { ...sessionInclude, series: { select: { meetingUrl: true } } } }, creditGrant: { select: { kind: true, expiresAt: true, program: { select: { name: true } } } }, reports: { where: { publishedAt: { not: null } }, select: { id: true } } } })
       if (!b) return null
       return { id: b.id, status: b.status, source: b.source, minutes: b.minutes, cancelledAt: b.cancelledAt, student: b.student, session: sessionOut(b.session), funding: b.creditGrant ? { kind: b.creditGrant.kind, program: b.creditGrant.program?.name, expiresAt: b.creditGrant.expiresAt } : (b.payAsYouGo ? { kind: 'pay_as_you_go' } : null), reportId: b.reports[0]?.id ?? null }
+    },
+
+    /** One of the family's enrolments with its checkout invoice (enrol confirmation, retry payment). */
+    async myEnrolment(_: unknown, { id }: { id: string }, context: Ctx) {
+      const familyId = await myFamilyId(context)
+      if (!familyId) return null
+      const prisma = context.sudo().prisma
+      const e = await prisma.enrollment.findFirst({
+        where: { id, familyId },
+        include: {
+          program: { select: { id: true, name: true, slug: true, format: true } }, student: { select: { id: true, firstName: true, lastName: true } },
+          location: { select: { id: true, name: true, timezone: true } }, tutor: { select: { displayName: true } },
+          membership: { select: { status: true, price: true, currentPeriodEnd: true, plan: { select: { name: true } } } },
+          studentPackage: { select: { status: true, hours: true, price: true, package: { select: { name: true } } } },
+          bookings: { where: { status: 'booked' }, select: { id: true, session: { select: { startsAt: true, endsAt: true } } }, orderBy: { session: { startsAt: 'asc' } }, take: 6 },
+        },
+      })
+      if (!e) return null
+      const lines = await prisma.invoiceLine.findMany({ where: { OR: [e.membershipId ? { membershipId: e.membershipId } : { id: '_' }, e.studentPackageId ? { studentPackageId: e.studentPackageId } : { id: '_' }] }, select: { invoiceId: true }, take: 1, orderBy: { createdAt: 'asc' } })
+      const invoice = lines[0]?.invoiceId ? await prisma.invoice.findUnique({ where: { id: lines[0].invoiceId }, select: { id: true, number: true, status: true, total: true, amountPaid: true, currency: true, fulfilment: true } }) : null
+      const tz = e.location?.timezone || (await defaultTimezone(prisma))
+      return {
+        id: e.id, status: e.status, mode: e.mode, fundingType: e.fundingType, startDate: e.startDate, timezone: tz,
+        program: e.program, student: e.student, location: e.location, tutor: e.tutor?.displayName ?? null,
+        membership: e.membership ? { status: e.membership.status, price: e.membership.price, planName: e.membership.plan?.name, currentPeriodEnd: e.membership.currentPeriodEnd } : null,
+        studentPackage: e.studentPackage ? { status: e.studentPackage.status, hours: e.studentPackage.hours, price: e.studentPackage.price, name: e.studentPackage.package?.name } : null,
+        upcoming: e.bookings.map((b: any) => ({ id: b.id, startsAt: b.session?.startsAt, endsAt: b.session?.endsAt })),
+        invoice: invoice ? { id: invoice.id, number: invoice.number, status: invoice.status, total: invoice.total, amountPaid: invoice.amountPaid, currency: invoice.currency, missedSeats: (invoice.fulfilment as any)?.missedSeats ?? 0 } : null,
+      }
     },
 
     /** One of the family's assessments, with its fee invoice (confirmation page, schedule row). */

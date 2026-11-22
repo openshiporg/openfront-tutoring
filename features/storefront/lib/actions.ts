@@ -186,3 +186,51 @@ export async function completePaymentAction(paymentSessionId: string, _invoiceId
   revalidatePath('/account', 'layout')
   return r.success ? { ok: true, error: null, data: r.data } : { ok: false, error: r.error }
 }
+
+// ---------------------------------------------------------------- enrol and pay (W1 steps 7–8)
+export type CheckoutStart = PaymentStart & { enrollmentId?: string; newAccount?: boolean; total?: number; subtotal?: number; discount?: number; tax?: number; invoiceStatus?: string }
+
+export async function startEnrolmentCheckoutAction(input: {
+  programId: string; planId?: string | null; packageId?: string | null; mode: string; locationId?: string | null; seriesIds?: string[]
+  studentId?: string | null; student?: { firstName: string; lastName?: string; levelId?: string | null; school?: string } | null
+  guardian?: { name: string; email: string; phone?: string } | null; promoCode?: string | null; learningPlanId?: string | null
+  homeAddress?: string; preferredTimes?: string; acceptPolicies: boolean; saveCard: boolean; idempotencyKey: string
+}): Promise<CheckoutStart> {
+  if (!input.acceptPolicies) return { ok: false, error: 'Please accept the policies to continue.' }
+  const r = await command('startEnrolmentCheckout', `mutation($programId: ID!, $planId: ID, $packageId: ID, $mode: String!, $locationId: ID, $seriesIds: [ID!], $studentId: ID, $student: CheckoutStudentInput, $guardian: CheckoutGuardianInput, $promoCode: String, $learningPlanId: ID, $homeAddress: String, $preferredTimes: String, $acceptPolicies: Boolean!, $saveCard: Boolean, $k: String) {
+    startEnrolmentCheckout(programId: $programId, planId: $planId, packageId: $packageId, mode: $mode, locationId: $locationId, seriesIds: $seriesIds, studentId: $studentId, student: $student, guardian: $guardian, promoCode: $promoCode, learningPlanId: $learningPlanId, homeAddress: $homeAddress, preferredTimes: $preferredTimes, acceptPolicies: $acceptPolicies, saveCard: $saveCard, idempotencyKey: $k) { ${CR} } }`,
+    { ...input, k: input.idempotencyKey, idempotencyKey: undefined, planId: input.planId || null, packageId: input.packageId || null, locationId: input.locationId || null, studentId: input.studentId || null, promoCode: input.promoCode || null, learningPlanId: input.learningPlanId || null })
+  revalidatePath('/', 'layout')
+  if (!r.success || !r.data) return { ok: false, error: r.error, ...(r.data as any) }
+  return { ok: true, error: null, ...(r.data as any) }
+}
+
+export async function completeEnrolmentCheckoutAction(paymentSessionId: string): Promise<ActionState> {
+  const r = await command('completeEnrolmentCheckout', `mutation($p: ID!) { completeEnrolmentCheckout(paymentSessionId: $p) { ${CR} } }`, { p: paymentSessionId })
+  revalidatePath('/account', 'layout')
+  return r.success ? { ok: true, error: null, id: r.id, data: r.data } : { ok: false, error: r.error, data: r.data }
+}
+
+export async function purchasePackageAction(packageId: string, studentId: string, useSavedCard: boolean, idempotencyKey: string): Promise<PaymentStart> {
+  const r = await command('purchasePackage', `mutation($p: ID!, $s: ID!, $sc: Boolean, $u: Boolean, $k: String) { purchasePackage(packageId: $p, studentId: $s, saveCard: $sc, useSavedCard: $u, idempotencyKey: $k) { ${CR} } }`, { p: packageId, s: studentId, sc: !useSavedCard, u: useSavedCard, k: idempotencyKey })
+  revalidatePath('/account', 'layout')
+  if (!r.success || !r.data) return { ok: false, error: r.error }
+  return { ok: true, error: null, ...(r.data as any) }
+}
+
+export async function createSetupIntentAction(): Promise<{ ok: boolean; error: string | null; clientSecret?: string; setupIntentId?: string; publishableKey?: string }> {
+  const r = await command('createSetupIntent', `mutation { createSetupIntent { ${CR} } }`, {})
+  if (!r.success || !r.data) return { ok: false, error: r.error }
+  return { ok: true, error: null, ...(r.data as any) }
+}
+
+export async function setDefaultPaymentMethodAction(setupIntentId: string): Promise<ActionState> {
+  const r = await command('setDefaultPaymentMethod', `mutation($s: ID!) { setDefaultPaymentMethod(setupIntentId: $s) { ${CR} } }`, { s: setupIntentId })
+  revalidatePath('/account', 'layout')
+  return r.success ? { ok: true, error: null, data: r.data } : { ok: false, error: r.error }
+}
+
+export async function previewCancellationAction(bookingId: string, excused: boolean) {
+  const r = await gql<{ cancellationPreview: any }>('query($id:ID!,$e:Boolean){ cancellationPreview(bookingId:$id, excused:$e) { outcome hoursBefore windowHours creditReturned makeUpGranted makeUpExpiresAt excusedLeftThisMonth message } }', { id: bookingId, e: excused })
+  return { value: r.data?.cancellationPreview ?? null, error: r.error }
+}
