@@ -8007,6 +8007,24 @@ type Query {
   authenticatedItem: AuthenticatedItem
   validateUserPasswordResetToken(email: String!, token: String!): ValidateUserPasswordResetTokenResult
   redirectToInit: Boolean
+  storefrontBusiness: JSON
+  storefrontPrograms(subject: String, level: String, mode: String): JSON
+  storefrontProgram(slug: String!): JSON
+  storefrontLocations: JSON
+  storefrontLocation(slug: String!): JSON
+  storefrontTutors(filter: JSON): JSON
+  storefrontTutor(slug: String!): JSON
+  storefrontPricing: JSON
+  storefrontPolicies: JSON
+  assessmentSlots(programId: ID!, locationId: ID, mode: String, from: String, to: String): JSON
+  openSessions(programId: ID, locationId: ID, from: String, to: String): JSON
+  myFamily: JSON
+  myStudent(id: ID!): JSON
+  myUpcomingBookings(includePast: Boolean, studentId: ID): JSON
+  myBooking(id: ID!): JSON
+  myCredits: JSON
+  myInvoices: JSON
+  myInvoice(id: ID!): JSON
   cancellationPreview(bookingId: ID!, excused: Boolean): CancellationPreview
 }
 
