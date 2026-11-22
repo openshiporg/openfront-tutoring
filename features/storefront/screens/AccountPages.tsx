@@ -576,6 +576,11 @@ export async function AccountBookingPage({ params }: { params: Promise<{ id: str
             {s.tutor ? (<><dt>Tutor</dt><dd>{s.tutor.slug ? <Link className="bp-accent" href={`/tutors/${s.tutor.slug}`}>{s.tutor.displayName}</Link> : s.tutor.displayName}</dd></>) : null}
             <dt>Paid with</dt><dd>{b.funding ? (b.funding.kind === 'pay_as_you_go' ? 'Pay as you go' : `${label(b.funding.kind)} credit${b.funding.program ? `, ${b.funding.program}` : ''}`) : 'Included'}</dd>
           </dl>
+          {String(b.status).startsWith('cancelled') ? (
+            <div className="bp-notice is-ok" role="status" style={{ marginTop: 14 }}>
+              This session is cancelled{b.cancelledAt ? ` (${dateOnly(b.cancelledAt)})` : ''}. {b.status === 'cancelled_early' ? 'It was cancelled in time, so the session credit is back on the account.' : b.status === 'cancelled_late' ? 'It was cancelled inside the cancellation window, so the session counts as used.' : ''} <Link className="bp-accent" href="/account/book">Book another time</Link>
+            </div>
+          ) : null}
           {b.reportId ? <p style={{ marginTop: 14 }}><Link className="bp-accent" href={`/account/progress?student=${b.student.id}`}>Read the session report</Link></p> : null}
           {upcoming ? (
             <>

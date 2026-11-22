@@ -35,6 +35,7 @@ function Inner({ kind = 'payment', label, settle, onSettled }: { kind?: 'payment
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [slow, setSlow] = useState(false)
+  const [note, setNote] = useState<string | null>(null)
   const returnUrl = useMemo(() => (typeof window === 'undefined' ? '' : window.location.href), [])
 
   async function submit(e: React.FormEvent) {
@@ -42,35 +43,59 @@ function Inner({ kind = 'payment', label, settle, onSettled }: { kind?: 'payment
     if (!stripe || !elements) return
     setBusy(true)
     setError(null)
+    setNote(null)
     setSlow(false)
     // Stripe may hold the confirm open (bank 3-D Secure, or its own verification check). Never sit silent.
     const timer = window.setTimeout(() => setSlow(true), 20000)
     let result: { error?: { message?: string } }
     try {
       result = kind === 'setup'
-      ? await stripe.confirmSetup({ elements, redirect: 'if_required', confirmParams: { return_url: returnUrl } })
-      : await stripe.confirmPayment({ elements, redirect: 'if_required', confirmParams: { return_url: returnUrl } })
-    } catch (err) {
-      result = { error: { message: 'The payment could not be started. Check your connection and try again.' } } as any
+        ? await stripe.confirmSetup({ elements, redirect: 'if_required', confirmParams: { return_url: returnUrl } })
+        : await stripe.confirmPayment({ elements, redirect: 'if_required', confirmParams: { return_url: returnUrl } })
+    } catch {
+      result = { error: { message: 'The payment could not be started. Check your connection and try again.' } }
     } finally {
       window.clearTimeout(timer)
       setSlow(false)
     }
     if (result.error) {
-      setError(result.error.message || 'The card could not be used.')
+      // Only here has nothing been taken: Stripe refused or never ran the confirm.
+      setError(`${result.error.message || 'The card could not be used.'} You have not been charged; you can try again.`)
       setBusy(false)
       return
     }
-    const settled = await settle()
+
+    // Stripe accepted the card. From here on, never tell the customer they were not charged.
+    // The server re-reads the intent itself; retry every 3 s for up to 60 s if it throws or is still settling.
+    const deadline = Date.now() + 60000
+    let last: Settled | null = null
+    for (;;) {
+      try {
+        last = await settle()
+        const pending = last.ok && last.data?.status && !['captured', 'succeeded', 'failed', 'cancelled'].includes(last.data.status) && last.data?.invoiceStatus !== 'paid'
+        if (!pending && last.ok) break
+        if (!last.ok && !/network|timeout|try again/i.test(last.error || '')) break
+      } catch {
+        last = null
+      }
+      if (Date.now() > deadline) break
+      setNote(kind === 'setup' ? 'Your card was accepted; we are saving it.' : 'Your card was accepted; we are confirming it now.')
+      await new Promise((r) => setTimeout(r, 3000))
+    }
     setBusy(false)
-    if (!settled.ok) setError(settled.error || 'We could not confirm this yet. Refresh in a moment; you will not be charged twice.')
-    onSettled(settled)
+    setNote(null)
+    if (last?.ok) { onSettled(last); return }
+    setError(kind === 'setup'
+      ? 'Your card was accepted, but we could not finish saving it yet. Refresh this page in a minute.'
+      : 'Your card was accepted, but we could not finish confirming it yet. Refresh this page in a minute; you will not be charged twice.')
+    if (last) onSettled(last)
   }
 
   return (
     <form onSubmit={submit} className="bp-stack">
       <PaymentElement options={{ layout: 'tabs' }} />
-      {error ? <div className="bp-notice is-error" role="alert">{error} You have not been charged; you can try again.</div> : null}
+      {error ? <div className="bp-notice is-error" role="alert">{error}</div> : null}
+      {note ? <div className="bp-notice is-ok" role="status">{note}</div> : null}
       {slow ? <div className="bp-notice" role="status">Still confirming with your bank. If a window asked you to verify, finish it there. If nothing happens, refresh this page and try again; you will not be charged twice.</div> : null}
       <button type="submit" className="bp-btn is-primary" style={{ width: '100%' }} disabled={!stripe || busy}>{busy ? 'Working…' : label}</button>
       <p className="bp-small bp-muted">Card details go straight to Stripe. We never see your full card number.</p>
