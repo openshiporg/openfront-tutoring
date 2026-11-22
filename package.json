@@ -9,7 +9,7 @@
     "lint": "next lint",
     "migrate:gen": "keystone build --no-ui && tsx features/keystone/view-order/generate-view-order.ts && keystone prisma migrate dev",
     "migrate": "prisma migrate deploy",
-    "test:state": "node --import tsx --test --test-concurrency=1 tests/*.test.ts"
+    "test": "node --import tsx --test --test-concurrency=1 tests/*.test.cjs tests/*.test.ts"
   },
   "dependencies": {
     "@ai-sdk/mcp": "^1.0.13",

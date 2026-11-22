@@ -15,16 +15,42 @@ function withSchema(url: string, schema: string) {
   u.searchParams.set('schema', schema)
   if (!u.searchParams.has('connection_limit')) u.searchParams.set('connection_limit', '20')
   if (!u.searchParams.has('pool_timeout')) u.searchParams.set('pool_timeout', '60')
+  // A dead TCP connection (no FIN/RST from the network path) otherwise hangs a query until the
+  // OS gives up retransmitting, 15-22 minutes on macOS, then fails with P1017. 150 s is above the
+  // 120 s transaction timeout, so a real lock wait never trips it.
+  if (!u.searchParams.has('socket_timeout')) u.searchParams.set('socket_timeout', '150')
   return u.toString()
 }
 
 let contextPromise: Promise<any> | null = null
+let suiteLock: any = null
+
+/**
+ * Two test processes on one schema TRUNCATE each other's rows mid-test. Each process holds a
+ * session advisory lock on its own pinned connection until it exits; a second one waits.
+ */
+async function lockSuite(url: string, schema: string) {
+  const { PrismaClient } = await import('@prisma/client')
+  const u = new URL(url)
+  u.searchParams.set('connection_limit', '1')
+  u.searchParams.delete('socket_timeout')
+  suiteLock = new PrismaClient({ datasourceUrl: u.toString() })
+  const key = `tutoring-test-suite:${schema}`
+  for (let waited = 0; ; waited += 5) {
+    const [row]: any = await suiteLock.$queryRawUnsafe(`SELECT pg_try_advisory_lock(hashtext($1)) AS ok`, key)
+    if (row.ok) return
+    if (waited % 60 === 0) console.error(`waiting for another test run on schema "${schema}" to finish`)
+    await new Promise((r) => setTimeout(r, 5000))
+  }
+}
 
 export async function getTestContext(): Promise<any> {
   if (!hasDatabase) throw new Error('No database configured')
   if (!contextPromise) {
     contextPromise = (async () => {
-      const url = withSchema(base, process.env.TUTORING_TEST_SCHEMA || 'suite')
+      const schema = process.env.TUTORING_TEST_SCHEMA || 'suite'
+      const url = withSchema(base, schema)
+      await lockSuite(url, schema)
       process.env.DATABASE_URL = url
       if (!(globalThis as any).__tutoringMigrated) {
         try {

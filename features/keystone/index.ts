@@ -10,7 +10,23 @@ import { storageConfig } from "./lib/storage";
 import { ROLE_FLAGS } from "./access";
 import { ROLE_TEMPLATES } from "./lib/roles";
 
-const databaseURL = process.env.DATABASE_URL || "file:./keystone.db";
+/**
+ * A dead TCP connection to Postgres (no FIN/RST from the network path) otherwise hangs a query
+ * until the OS stops retransmitting, 15+ minutes, before Prisma reports P1017. socket_timeout
+ * bounds it; 150 s stays above the 120 s command transaction timeout so lock waits are unaffected.
+ */
+function withSocketTimeout(url: string) {
+  if (!/^postgres(ql)?:\/\//.test(url)) return url;
+  try {
+    const u = new URL(url);
+    if (!u.searchParams.has("socket_timeout")) u.searchParams.set("socket_timeout", "150");
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
+const databaseURL = withSocketTimeout(process.env.DATABASE_URL || "file:./keystone.db");
 
 const sessionConfig = {
   maxAge: 60 * 60 * 24 * 30,
