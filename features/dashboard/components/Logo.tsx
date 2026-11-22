@@ -1,10 +1,11 @@
 import React from "react";
 import { cn } from "@/lib/utils";
-import { Space_Grotesk } from "next/font/google";
+import localFont from "next/font/local";
 import { Slash, X } from "lucide-react";
 
-const spaceGrotesk = Space_Grotesk({
-  subsets: ["latin"],
+const spaceGrotesk = localFont({
+  src: "../../../lib/fonts/SpaceGrotesk-latin.woff2",
+  weight: "300 700",
   display: "swap",
   adjustFontFallback: false,
 });
