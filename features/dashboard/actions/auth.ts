@@ -157,7 +157,9 @@ export async function getAuthenticatedUser() {
           email
           name
           role {
-            canAccessDashboard
+            canAccessDashboard canManageSettings canManageLeads canManageFamilies
+            canManageSchedule canMarkAttendance canManageBilling canManagePayroll
+            canManageTutors canManagePrograms canViewReports isTutor
           }
         }
       }
