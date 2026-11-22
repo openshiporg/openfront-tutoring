@@ -73,3 +73,7 @@ export async function getMyInvoice(id: string) {
   const r = await gql<{ myInvoice: any }>('query($id:ID!){ myInvoice(id:$id) }', { id })
   return { value: r.data?.myInvoice ?? null, error: r.error }
 }
+export async function getMyAssessment(id: string) {
+  const r = await gql<{ myAssessment: any }>('query($id:ID!){ myAssessment(id:$id) }', { id })
+  return { value: r.data?.myAssessment ?? null, error: r.error }
+}

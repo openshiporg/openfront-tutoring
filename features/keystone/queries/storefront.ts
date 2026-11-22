@@ -26,6 +26,7 @@ export const typeDefs = gql`
     myStudent(id: ID!): JSON
     myUpcomingBookings(includePast: Boolean, studentId: ID): JSON
     myBooking(id: ID!): JSON
+    myAssessment(id: ID!): JSON
     myCredits: JSON
     myInvoices: JSON
     myInvoice(id: ID!): JSON
@@ -529,6 +530,31 @@ export const resolvers = {
       const b = await prisma.booking.findFirst({ where: { id, familyId }, include: { student: { select: { id: true, firstName: true, lastName: true } }, session: { include: { ...sessionInclude, series: { select: { meetingUrl: true } } } }, creditGrant: { select: { kind: true, expiresAt: true, program: { select: { name: true } } } }, reports: { where: { publishedAt: { not: null } }, select: { id: true } } } })
       if (!b) return null
       return { id: b.id, status: b.status, source: b.source, minutes: b.minutes, cancelledAt: b.cancelledAt, student: b.student, session: sessionOut(b.session), funding: b.creditGrant ? { kind: b.creditGrant.kind, program: b.creditGrant.program?.name, expiresAt: b.creditGrant.expiresAt } : (b.payAsYouGo ? { kind: 'pay_as_you_go' } : null), reportId: b.reports[0]?.id ?? null }
+    },
+
+    /** One of the family's assessments, with its fee invoice (confirmation page, schedule row). */
+    async myAssessment(_: unknown, { id }: { id: string }, context: Ctx) {
+      const familyId = await myFamilyId(context)
+      if (!familyId) return null
+      const prisma = context.sudo().prisma
+      const a = await prisma.assessment.findFirst({
+        where: { id, familyId },
+        include: {
+          program: { select: { id: true, name: true, slug: true } }, student: { select: { id: true, firstName: true, lastName: true } },
+          location: { select: { id: true, name: true, slug: true, timezone: true, addressLine1: true, city: true, region: true, postalCode: true, phone: true } },
+          room: { select: { name: true } }, assessor: { select: { displayName: true } },
+          invoice: { select: { id: true, number: true, status: true, total: true, amountPaid: true, currency: true } },
+        },
+      })
+      if (!a) return null
+      const [settings, tz] = await Promise.all([prisma.businessSettings.findUnique({ where: { id: 1 } }), defaultTimezone(prisma)])
+      return {
+        id: a.id, status: a.status, kind: a.kind, mode: a.mode, scheduledAt: a.scheduledAt, minutes: a.minutes, fee: a.fee,
+        endsAt: new Date(a.scheduledAt.getTime() + (a.minutes || 0) * 60_000),
+        timezone: a.location?.timezone || tz, program: a.program, student: a.student, location: a.location, room: a.room,
+        assessor: a.assessor?.displayName ?? null, invoice: a.invoice,
+        refundHours: settings?.assessmentCancelRefundHours ?? 24,
+      }
     },
 
     async myCredits(_: unknown, __: unknown, context: Ctx) {

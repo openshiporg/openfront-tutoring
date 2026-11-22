@@ -155,3 +155,26 @@ export async function registerAction(_: ActionState, f: FormData): Promise<Actio
 function safeNext(v: string) {
   return v.startsWith('/') && !v.startsWith('//') && !/[\\\r\n]/.test(v) && !v.startsWith('/dashboard') ? v : ''
 }
+
+// ---------------------------------------------------------------- reads the booking forms call as the visitor picks
+export async function loadAssessmentSlots(programId: string, mode: string, locationId: string | null, from?: string) {
+  const r = await gql<{ assessmentSlots: any }>('query($p: ID!, $l: ID, $m: String, $f: String) { assessmentSlots(programId: $p, locationId: $l, mode: $m, from: $f) }', { p: programId, l: locationId, m: mode, f: from || null })
+  return { value: r.data?.assessmentSlots ?? null, error: r.error }
+}
+
+// ---------------------------------------------------------------- card payments (Stripe Elements)
+export type PaymentStart = { ok: boolean; error: string | null; clientSecret?: string | null; publishableKey?: string; amount?: number; currency?: string; status?: string; paymentSessionId?: string; invoiceId?: string }
+
+/** §5.9 payInvoice: opens (or reuses) the PaymentIntent for an open invoice's amount due. */
+export async function startInvoicePaymentAction(invoiceId: string, saveCard: boolean, idempotencyKey: string): Promise<PaymentStart> {
+  const r = await command('payInvoice', `mutation($i: ID!, $s: Boolean, $k: String) { payInvoice(invoiceId: $i, saveCard: $s, idempotencyKey: $k) { ${CR} } }`, { i: invoiceId, s: saveCard, k: idempotencyKey })
+  if (!r.success || !r.data) return { ok: false, error: r.error }
+  return { ok: true, error: null, ...(r.data as any) }
+}
+
+/** After Stripe.js confirms: the server reads the PaymentIntent itself and settles (never trusts the browser). */
+export async function completePaymentAction(paymentSessionId: string, invoiceId: string): Promise<ActionState> {
+  const r = await command('payInvoice', `mutation($i: ID!, $p: ID, $k: String) { payInvoice(invoiceId: $i, paymentSessionId: $p, idempotencyKey: $k) { ${CR} } }`, { i: invoiceId, p: paymentSessionId, k: `complete:${paymentSessionId}` })
+  revalidatePath('/account', 'layout')
+  return r.success ? { ok: true, error: null, data: r.data } : { ok: false, error: r.error }
+}
