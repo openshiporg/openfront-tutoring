@@ -12,6 +12,23 @@ import { Button } from '@/components/ui/button'
 import { PageContainer } from '../../components/PageContainer'
 import { getAdminMetaAction, getListCounts } from '../../actions'
 import { cn } from '@/lib/utils'
+import { getOnboardingState } from '@/features/platform/onboarding/actions/onboarding'
+
+async function SetupBanner() {
+  const r = await getOnboardingState()
+  if (!r.ok || !r.data.onboardingState || r.data.onboardingState.onboarded || !r.data.authenticatedItem?.role?.canManageSettings) return null
+  return (
+    <Card className="border-primary/40">
+      <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
+        <div>
+          <h2 className="text-sm font-semibold">Set up your business</h2>
+          <p className="text-xs text-muted-foreground">Name, first location and hours, and an optional starter set of programmes, tutors and families.</p>
+        </div>
+        <Link href="/dashboard/platform/onboarding"><Button size="sm">Start setup</Button></Link>
+      </CardContent>
+    </Card>
+  )
+}
 
 interface ListCardProps {
   list: any
@@ -136,6 +153,7 @@ export async function HomePage() {
   return (
     <PageContainer title="Dashboard" header={header} breadcrumbs={breadcrumbs}>
       <div className="w-full max-w-4xl p-4 md:p-6 flex flex-col gap-4">
+        <SetupBanner />
         <div className="mb-4">
           <h2 className="tracking-wide uppercase font-medium mb-2 text-muted-foreground text-sm">
             Data Models

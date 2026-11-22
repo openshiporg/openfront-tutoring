@@ -8,6 +8,7 @@ import * as memberships from "./memberships";
 import * as families from "./families";
 import * as tutors from "./tutors";
 import * as payroll from "./payroll";
+import * as onboarding from "./onboarding";
 import * as storefrontQueries from "../queries/storefront";
 import * as platformQueries from "../queries/platform";
 
@@ -21,7 +22,7 @@ const graphql = String.raw;
 const COMMAND_OVERRIDES = new Set(['createSessionSeries', 'createPayrollRun', 'createTutorApplication', 'updateStudent']);
 
 // Each module exports { typeDefs, resolvers }. Storefront read queries live in ../queries.
-const modules = [storefrontQueries, platformQueries, schedule, assessments, billing, memberships, families, tutors, payroll];
+const modules = [storefrontQueries, platformQueries, schedule, assessments, billing, memberships, families, tutors, payroll, onboarding];
 
 export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
   return mergeSchemas({
