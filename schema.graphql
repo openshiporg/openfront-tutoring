@@ -7819,6 +7819,17 @@ type Mutation {
   refundPayment(paymentId: ID!, amount: Int!, reason: String!, idempotencyKey: String): CommandResult!
   issueCreditNote(invoiceId: ID!, amount: Int!, reason: String!, idempotencyKey: String): CommandResult!
   voidInvoice(invoiceId: ID!, reason: String!): CommandResult!
+  requestMembershipPause(membershipId: ID!, from: String!, until: String!, idempotencyKey: String): CommandResult!
+  requestMembershipCancel(membershipId: ID!, idempotencyKey: String): CommandResult!
+  pauseMembership(membershipId: ID!, from: String!, until: String!, reason: String, idempotencyKey: String): CommandResult!
+  endMembership(membershipId: ID!, mode: String!, refund: Boolean, reason: String!, idempotencyKey: String): CommandResult!
+  changeMembershipPlan(membershipId: ID!, planId: ID!, effective: String!, idempotencyKey: String): CommandResult!
+  runMembershipBilling(membershipId: ID): CommandResult!
+  reconcileBillingAttempt(billingAttemptId: ID!): CommandResult!
+  expireCredits: CommandResult!
+  grantGoodwillCredit(familyId: ID!, studentId: ID, programId: ID, minutes: Int!, expiresInDays: Int, reason: String!, idempotencyKey: String): CommandResult!
+  runDailyJobs: CommandResult!
+  rotateJobsSecret: CommandResult!
 }
 
 union UserAuthenticationWithPasswordResult = UserAuthenticationWithPasswordSuccess | UserAuthenticationWithPasswordFailure
@@ -8036,6 +8047,7 @@ type Query {
   storefrontTutors(filter: JSON): JSON
   storefrontTutor(slug: String!): JSON
   storefrontPricing: JSON
+  enrolmentOptions(programId: ID!): JSON
   storefrontPolicies: JSON
   assessmentSlots(programId: ID!, locationId: ID, mode: String, from: String, to: String): JSON
   openSessions(programId: ID, locationId: ID, from: String, to: String): JSON
@@ -8044,10 +8056,12 @@ type Query {
   myUpcomingBookings(includePast: Boolean, studentId: ID): JSON
   myBooking(id: ID!): JSON
   myAssessment(id: ID!): JSON
+  myEnrolment(id: ID!): JSON
   myCredits: JSON
   myInvoices: JSON
   myInvoice(id: ID!): JSON
   cancellationPreview(bookingId: ID!, excused: Boolean): CancellationPreview
+  membershipPlanChangePreview(membershipId: ID!, planId: ID!): JSON
 }
 
 union AuthenticatedItem = User

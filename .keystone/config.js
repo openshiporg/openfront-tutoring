@@ -171,6 +171,22 @@ var init_access = __esm({
   }
 });
 
+// features/keystone/lib/json.ts
+function canonicalJson(value) {
+  if (value instanceof Date) return JSON.stringify(value.toISOString());
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value;
+    return `{${Object.keys(record).filter((k) => record[k] !== void 0).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+var init_json = __esm({
+  "features/keystone/lib/json.ts"() {
+    "use strict";
+  }
+});
+
 // features/keystone/lib/errors.ts
 var CommandError;
 var init_errors = __esm({
@@ -272,6 +288,727 @@ var init_actor = __esm({
     init_access();
     init_errors();
     roleSelect = Object.fromEntries(ROLE_FLAGS.map((f) => [f, true]));
+  }
+});
+
+// features/keystone/lib/command.ts
+function isRetryable(error) {
+  const code = error?.code;
+  return code === "P2034" || /deadlock detected|could not serialize/i.test(String(error?.message || ""));
+}
+async function transaction(prisma, fn, attempts = 6) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await prisma.$transaction(fn, TX_OPTIONS);
+    } catch (error) {
+      if (!isRetryable(error) || attempt >= attempts) throw error;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(400, 20 * 2 ** attempt) + Math.floor(Math.random() * 25)));
+    }
+  }
+}
+async function lockKey(tx, key) {
+  await tx.$queryRaw`SELECT true AS locked FROM (SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))) AS acquired`;
+}
+async function cas(tx, model, id, from, data, message) {
+  const expected = Array.isArray(from) ? from : [from];
+  const result = await tx[model].updateMany({ where: { id, status: { in: expected } }, data });
+  if (result.count !== 1) throw new CommandError(message || "This record was changed by someone else. Reload and try again.");
+}
+async function recordChange(tx, input) {
+  await tx.changeEvent.create({
+    data: {
+      aggregateType: input.type,
+      aggregateId: input.id,
+      from: input.from ?? "",
+      to: input.to ?? "",
+      reason: input.reason ?? "",
+      data: input.data ?? {},
+      at: /* @__PURE__ */ new Date(),
+      ...input.actorId ? { actor: { connect: { id: input.actorId } }, createdBy: { connect: { id: input.actorId } } } : {}
+    }
+  });
+}
+async function transition(tx, actor, model, type, id, from, to, extra = {}, reason) {
+  const current = await tx[model].findUnique({ where: { id }, select: { status: true } });
+  if (!current) throw new CommandError("That record was not found.");
+  const expected = Array.isArray(from) ? from : [from];
+  if (!expected.includes(current.status)) throw new CommandError(`This ${type.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase()} is ${current.status.replace(/_/g, " ")}; it cannot move to ${to.replace(/_/g, " ")}.`);
+  await cas(tx, model, id, expected, { ...extra, status: to });
+  await recordChange(tx, { type, id, from: current.status, to, actorId: actor?.userId, reason });
+}
+function isUnique(error) {
+  return error?.code === "P2002";
+}
+async function runCommand(context, options2, fn) {
+  const prisma = context.sudo().prisma;
+  let after;
+  try {
+    const actor = context.session?.itemId ? await loadActor(prisma, context.session.itemId) : null;
+    if (!actor && !options2.allowAnonymous) throw new CommandError("Sign in to continue.");
+    const key = typeof options2.idempotencyKey === "string" ? options2.idempotencyKey.trim() : "";
+    if (key && (key.length < 8 || key.length > 200)) throw new CommandError("The idempotency key must be 8 to 200 characters.");
+    const outcome = await transaction(prisma, async (tx) => {
+      let eventKey = "";
+      let payloadHash = "";
+      if (key) {
+        eventKey = `${options2.name}:${actor?.userId ?? "public"}:${key}`;
+        payloadHash = (0, import_node_crypto2.createHash)("sha256").update(canonicalJson({ name: options2.name, input: options2.input })).digest("hex");
+        await lockKey(tx, `command-receipt:${eventKey}`);
+        const existing = await tx.commandReceipt.findUnique({ where: { eventKey } });
+        if (existing) {
+          if (existing.payloadHash !== payloadHash) throw new CommandError("This idempotency key was already used with different details.");
+          return { replay: true, result: existing.result };
+        }
+      }
+      const value = await fn(tx, actor);
+      const result = { success: !value.refusal, error: value.refusal ?? null, id: value.id ?? null, data: value.data ?? null };
+      if (key) {
+        await tx.commandReceipt.create({
+          data: {
+            eventKey,
+            eventType: options2.name,
+            schemaVersion: 1,
+            aggregateType: options2.name,
+            aggregateId: value.id ?? "",
+            payload: { input: options2.input ?? null },
+            result,
+            actorId: actor?.userId ?? "",
+            payloadHash,
+            occurredAt: /* @__PURE__ */ new Date()
+          }
+        });
+      }
+      after = value.after;
+      return { replay: false, result };
+    });
+    if (!outcome.replay && after) {
+      try {
+        await after();
+      } catch (error) {
+        console.error(`${options2.name}: after-commit step failed`, error?.message);
+      }
+    }
+    return outcome.result;
+  } catch (error) {
+    if (error instanceof CommandError) return { success: false, error: error.message, id: null, data: error.data ?? null };
+    if (isUnique(error)) return { success: false, error: options2.conflictMessage || "That conflicts with an existing record.", id: null, data: null };
+    console.error(`${options2.name} failed:`, error?.message);
+    return { success: false, error: "Something went wrong. Please try again.", id: null, data: null };
+  }
+}
+function requireString(value, label2, max = 500) {
+  const text10 = typeof value === "string" ? value.trim() : "";
+  if (!text10) throw new CommandError(`${label2} is required.`);
+  if (text10.length > max) throw new CommandError(`${label2} is too long.`);
+  return text10;
+}
+function optionalString(value, max = 2e3) {
+  return typeof value === "string" ? value.trim().slice(0, max) : "";
+}
+function requireInt(value, label2, min = 0, max = Number.MAX_SAFE_INTEGER) {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < min || n > max) throw new CommandError(`${label2} must be a whole number${min === 0 ? "" : ` from ${min}`}.`);
+  return n;
+}
+function requireDate(value, label2) {
+  const date = value instanceof Date ? value : new Date(String(value ?? ""));
+  if (Number.isNaN(date.getTime())) throw new CommandError(`${label2} is not a valid date.`);
+  return date;
+}
+var import_node_crypto2, TX_OPTIONS;
+var init_command = __esm({
+  "features/keystone/lib/command.ts"() {
+    "use strict";
+    import_node_crypto2 = require("node:crypto");
+    init_json();
+    init_actor();
+    init_errors();
+    TX_OPTIONS = { maxWait: 6e4, timeout: 12e4 };
+  }
+});
+
+// features/keystone/lib/settings.ts
+async function getSettings(db) {
+  const row = await db.businessSettings.findUnique({ where: { id: 1 } });
+  const merged = { ...DEFAULT_SETTINGS };
+  if (row) {
+    for (const key of Object.keys(DEFAULT_SETTINGS)) if (row[key] !== null && row[key] !== void 0) merged[key] = row[key];
+  }
+  if (!Array.isArray(merged.pastDueRetryDays)) merged.pastDueRetryDays = DEFAULT_SETTINGS.pastDueRetryDays;
+  return merged;
+}
+async function getBusiness(db) {
+  const row = await db.business.findUnique({ where: { id: 1 } });
+  return row ?? { id: 1, name: "", currency: "USD", country: "US", nextInvoiceNumber: 1001, supportEmail: "", careersEmail: "" };
+}
+var DEFAULT_SETTINGS, HOUR, DAY;
+var init_settings = __esm({
+  "features/keystone/lib/settings.ts"() {
+    "use strict";
+    DEFAULT_SETTINGS = {
+      cancellationWindowHours: 24,
+      lateCancelCharged: true,
+      noShowCharged: true,
+      excusedAbsencesPerMonth: 1,
+      makeUpExpiryDays: 60,
+      membershipRolloverPeriods: 1,
+      membershipCancelNoticeDays: 30,
+      pauseMinDays: 14,
+      pauseMaxDays: 28,
+      pausesPerYear: 1,
+      pastDueRetryDays: [3, 7],
+      suspendAfterDays: 10,
+      siblingDiscountPercent: 10,
+      offerExpiryHours: 24,
+      freeRematches: 1,
+      trialChargedOnRematch: false,
+      tutorPaidOnLateCancelPercent: 100,
+      tutorPaidOnNoShowPercent: 100,
+      payrollPeriodDays: 14,
+      progressReportEverySessions: 12,
+      progressReportEveryWeeks: 4,
+      reassessEveryWeeks: 12,
+      lowBalanceMinutes: 120,
+      bookingHorizonDays: 42,
+      attendanceEditWindowHours: 48,
+      assessmentCancelRefundHours: 24,
+      assessmentFeeKeptOnLateCancel: true,
+      enrolmentFeeWaivedWithinDays: 90,
+      frontDeskRefundLimit: 0,
+      reopenWindowDays: 14,
+      policiesText: "",
+      jobsSecretHash: "",
+      lastDailyJobsAt: null
+    };
+    HOUR = 36e5;
+    DAY = 24 * HOUR;
+  }
+});
+
+// features/keystone/lib/invoices.ts
+async function nextNumber(tx) {
+  await tx.business.upsert({ where: { id: 1 }, create: { id: 1 }, update: {} });
+  const rows = await tx.$queryRaw`
+    UPDATE "Business" SET "nextInvoiceNumber" = COALESCE("nextInvoiceNumber", 1001) + 1 WHERE id = 1
+    RETURNING COALESCE("nextInvoiceNumber", 1002) - 1 AS n`;
+  return Number(rows[0].n);
+}
+async function createInvoice(tx, input) {
+  if (!input.lines.length) throw new CommandError("An invoice needs at least one line.");
+  const business = await getBusiness(tx);
+  let taxRate = 0;
+  if (input.locationId) {
+    const loc = await tx.location.findUnique({ where: { id: input.locationId }, select: { taxRatePercent: true } });
+    taxRate = Number(loc?.taxRatePercent ?? 0);
+  }
+  const lines = input.lines.map((l) => ({ ...l, quantity: l.quantity ?? 1, amount: (l.quantity ?? 1) * l.unitAmount }));
+  const subtotal = lines.filter((l) => l.amount > 0).reduce((s, l) => s + l.amount, 0);
+  const lineDiscount = -lines.filter((l) => l.amount < 0).reduce((s, l) => s + l.amount, 0);
+  const discount = Math.min(subtotal, (input.discount ?? 0) + lineDiscount);
+  const tax = Math.round((subtotal - discount) * taxRate / 100);
+  const total = subtotal - discount + tax;
+  const status = input.status ?? "open";
+  const invoice = await tx.invoice.create({
+    data: {
+      number: await nextNumber(tx),
+      family: { connect: { id: input.familyId } },
+      ...input.locationId ? { location: { connect: { id: input.locationId } } } : {},
+      ...input.promoCodeId ? { promoCode: { connect: { id: input.promoCodeId } } } : {},
+      ...input.actorId ? { createdBy: { connect: { id: input.actorId } } } : {},
+      kind: input.kind,
+      status,
+      issuedAt: status === "open" ? /* @__PURE__ */ new Date() : null,
+      dueAt: input.dueAt ?? /* @__PURE__ */ new Date(),
+      subtotal,
+      discount,
+      tax,
+      total,
+      currency: business.currency || "USD",
+      fulfilment: input.fulfilment ?? {},
+      notes: input.notes ?? "",
+      lines: {
+        create: lines.map((l) => ({
+          description: l.description,
+          kind: l.kind,
+          quantity: l.quantity,
+          unitAmount: l.unitAmount,
+          amount: l.amount,
+          ...l.studentId ? { student: { connect: { id: l.studentId } } } : {},
+          ...l.programId ? { program: { connect: { id: l.programId } } } : {},
+          ...l.bookingId ? { booking: { connect: { id: l.bookingId } } } : {},
+          ...l.membershipId ? { membership: { connect: { id: l.membershipId } } } : {},
+          ...l.studentPackageId ? { studentPackage: { connect: { id: l.studentPackageId } } } : {},
+          ...l.assessmentId ? { assessment: { connect: { id: l.assessmentId } } } : {}
+        }))
+      }
+    }
+  });
+  return invoice;
+}
+function amountDue(inv) {
+  return Math.max(0, inv.total - inv.amountPaid - inv.amountCredited);
+}
+async function applyToInvoice(tx, invoiceId, amount, field = "amountPaid") {
+  const col = field === "amountPaid" ? "amountPaid" : "amountCredited";
+  const rows = col === "amountPaid" ? await tx.$executeRaw`UPDATE "Invoice" SET "amountPaid" = "amountPaid" + ${amount}, "updatedAt" = now()
+        WHERE id = ${invoiceId} AND status IN ('open','partially_paid') AND "amountPaid" + "amountCredited" + ${amount} <= total` : await tx.$executeRaw`UPDATE "Invoice" SET "amountCredited" = "amountCredited" + ${amount}, "updatedAt" = now()
+        WHERE id = ${invoiceId} AND status IN ('open','partially_paid','paid') AND "amountPaid" + "amountCredited" + ${amount} <= total`;
+  if (rows !== 1) throw new CommandError(field === "amountPaid" ? "That is more than the amount due on this invoice." : "That credit note is more than the invoice total less payments.");
+  const inv = await tx.invoice.findUnique({ where: { id: invoiceId }, select: { status: true, total: true, amountPaid: true, amountCredited: true } });
+  const due = amountDue(inv);
+  const next = due === 0 ? "paid" : inv.amountPaid + inv.amountCredited > 0 ? "partially_paid" : "open";
+  if (next !== inv.status) {
+    await tx.invoice.updateMany({ where: { id: invoiceId, status: inv.status }, data: { status: next } });
+    await tx.changeEvent.create({ data: { aggregateType: "Invoice", aggregateId: invoiceId, from: inv.status, to: next, reason: field, data: { amount } } });
+  }
+  return { from: inv.status, to: next };
+}
+var init_invoices = __esm({
+  "features/keystone/lib/invoices.ts"() {
+    "use strict";
+    init_errors();
+    init_settings();
+  }
+});
+
+// features/integrations/payment/stripe.ts
+var stripe_exports = {};
+__export(stripe_exports, {
+  StripeError: () => StripeError,
+  attachPaymentMethod: () => attachPaymentMethod,
+  cancelPaymentIntent: () => cancelPaymentIntent,
+  confirmPaymentIntent: () => confirmPaymentIntent,
+  createCustomer: () => createCustomer,
+  createPaymentIntent: () => createPaymentIntent,
+  createRefund: () => createRefund,
+  createSetupIntent: () => createSetupIntent,
+  listPaymentIntentsByMetadata: () => listPaymentIntentsByMetadata,
+  retrievePaymentIntent: () => retrievePaymentIntent,
+  retrievePaymentMethod: () => retrievePaymentMethod,
+  retrieveSetupIntent: () => retrieveSetupIntent,
+  signStripePayload: () => signStripePayload,
+  verifyStripeSignature: () => verifyStripeSignature
+});
+function form(values) {
+  const body = new URLSearchParams();
+  for (const [key, value] of Object.entries(values)) if (value !== void 0 && value !== null && value !== "") body.append(key, String(value));
+  return body;
+}
+async function call(keys, path, init = {}) {
+  if (!keys.secretKey) throw new StripeError("Card payments are not set up yet. Add the Stripe keys in Settings \u2192 Payments.", 0, "not_configured", false, false);
+  let response;
+  try {
+    response = await fetch(`${API}${path}`, {
+      method: init.method || "GET",
+      headers: {
+        Authorization: `Bearer ${keys.secretKey}`,
+        "Stripe-Version": "2024-06-20",
+        ...init.body ? { "Content-Type": "application/x-www-form-urlencoded" } : {},
+        ...init.idempotencyKey ? { "Idempotency-Key": init.idempotencyKey } : {}
+      },
+      body: init.body,
+      redirect: "error",
+      signal: AbortSignal.timeout(3e4)
+    });
+  } catch (error) {
+    throw new StripeError(`Stripe did not answer: ${error?.message || "network error"}`, 0, "network", false, true);
+  }
+  const json9 = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const e = json9.error ?? {};
+    throw new StripeError(e.message || `Stripe request failed (${response.status}).`, response.status, e.code || e.decline_code || null, e.type === "card_error", response.status >= 500 || response.status === 429);
+  }
+  return json9;
+}
+function createCustomer(keys, input, idempotencyKey) {
+  return call(keys, "/customers", { method: "POST", idempotencyKey, body: form({ email: input.email, name: input.name, ...meta({ familyId: input.familyId }) }) });
+}
+function createPaymentIntent(keys, input, idempotencyKey) {
+  const cents = Math.round(input.amount);
+  if (!Number.isSafeInteger(cents) || cents <= 0) throw new StripeError("Payment amount must be greater than zero.", 400, "amount", false, false);
+  return call(keys, "/payment_intents", {
+    method: "POST",
+    idempotencyKey,
+    body: form({
+      amount: cents,
+      currency: input.currency.toLowerCase(),
+      description: input.description,
+      customer: input.customer || void 0,
+      receipt_email: input.receiptEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.receiptEmail) ? input.receiptEmail : void 0,
+      ...input.offSession ? { payment_method: input.paymentMethod || void 0, off_session: "true", confirm: "true", "payment_method_types[0]": "card" } : { "automatic_payment_methods[enabled]": "true", "automatic_payment_methods[allow_redirects]": "never", ...input.saveCard && input.customer ? { setup_future_usage: "off_session" } : {} },
+      ...meta(input.metadata)
+    })
+  });
+}
+function retrievePaymentIntent(keys, id) {
+  return call(keys, `/payment_intents/${encodeURIComponent(id)}`);
+}
+function confirmPaymentIntent(keys, id, paymentMethod, idempotencyKey) {
+  return call(keys, `/payment_intents/${encodeURIComponent(id)}/confirm`, { method: "POST", idempotencyKey, body: form({ payment_method: paymentMethod }) });
+}
+function cancelPaymentIntent(keys, id) {
+  return call(keys, `/payment_intents/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+}
+function listPaymentIntentsByMetadata(keys, key, value) {
+  const q = encodeURIComponent(`metadata['${key}']:'${value.replace(/'/g, "")}'`);
+  return call(keys, `/payment_intents/search?query=${q}&limit=10`);
+}
+function createSetupIntent(keys, input, idempotencyKey) {
+  return call(keys, "/setup_intents", { method: "POST", idempotencyKey, body: form({ customer: input.customer, usage: "off_session", "automatic_payment_methods[enabled]": "true", "automatic_payment_methods[allow_redirects]": "never", ...meta(input.metadata) }) });
+}
+function retrieveSetupIntent(keys, id) {
+  return call(keys, `/setup_intents/${encodeURIComponent(id)}`);
+}
+function retrievePaymentMethod(keys, id) {
+  return call(keys, `/payment_methods/${encodeURIComponent(id)}`);
+}
+function attachPaymentMethod(keys, id, customer) {
+  return call(keys, `/payment_methods/${encodeURIComponent(id)}/attach`, { method: "POST", body: form({ customer }) });
+}
+function createRefund(keys, input, idempotencyKey) {
+  return call(keys, "/refunds", { method: "POST", idempotencyKey, body: form({ payment_intent: input.paymentIntent, amount: Math.round(input.amount), ...meta({ ...input.metadata ?? {}, note: input.reason }) }) });
+}
+function verifyStripeSignature(rawBody, header, secret2, toleranceSeconds = 300, now = Date.now()) {
+  if (!rawBody.byteLength || !header || !secret2) return false;
+  const parts = header.split(",").map((p) => p.trim().split("="));
+  const t = parts.find(([k]) => k === "t")?.[1];
+  const signatures = parts.filter(([k]) => k === "v1").map(([, v]) => v).filter((v) => typeof v === "string" && /^[a-f0-9]{64}$/i.test(v));
+  if (!t || !/^\d+$/.test(t) || !signatures.length) return false;
+  if (Math.abs(now / 1e3 - Number(t)) > toleranceSeconds) return false;
+  const expected = (0, import_node_crypto3.createHmac)("sha256", secret2).update(`${t}.`).update(rawBody).digest();
+  return signatures.some((s) => {
+    const received = Buffer.from(s, "hex");
+    return received.length === expected.length && (0, import_node_crypto3.timingSafeEqual)(received, expected);
+  });
+}
+function signStripePayload(rawBody, secret2, t = Math.floor(Date.now() / 1e3)) {
+  return `t=${t},v1=${(0, import_node_crypto3.createHmac)("sha256", secret2).update(`${t}.${rawBody}`).digest("hex")}`;
+}
+var import_node_crypto3, API, StripeError, meta;
+var init_stripe = __esm({
+  "features/integrations/payment/stripe.ts"() {
+    "use strict";
+    import_node_crypto3 = require("node:crypto");
+    API = "https://api.stripe.com/v1";
+    StripeError = class extends Error {
+      constructor(message, status, code, declined, unclear) {
+        super(message);
+        this.status = status;
+        this.code = code;
+        this.declined = declined;
+        this.unclear = unclear;
+      }
+    };
+    meta = (m = {}) => Object.fromEntries(Object.entries(m).filter(([, v]) => v != null && v !== "").map(([k, v]) => [`metadata[${k}]`, String(v)]));
+  }
+});
+
+// features/keystone/lib/payments.ts
+var payments_exports = {};
+__export(payments_exports, {
+  applyPayment: () => applyPayment,
+  ensureCustomer: () => ensureCustomer,
+  ensureProviders: () => ensureProviders,
+  fulfilInvoice: () => fulfilInvoice,
+  processRefund: () => processRefund,
+  refreshPaymentSession: () => refreshPaymentSession,
+  registerFulfilment: () => registerFulfilment,
+  requestRefund: () => requestRefund,
+  saveCardReference: () => saveCardReference,
+  settlePaymentIntent: () => settlePaymentIntent,
+  startInvoicePayment: () => startInvoicePayment,
+  stripe: () => stripe_exports,
+  stripeKeys: () => stripeKeys,
+  voidInvoiceIfUnpaid: () => voidInvoiceIfUnpaid
+});
+async function ensureProviders(db) {
+  for (const p of [{ code: STRIPE_CODE, name: "Card (Stripe)", isDefault: true }, { code: "pp_manual", name: "Cash, cheque or bank transfer", isDefault: false }]) {
+    await db.paymentProvider.upsert({ where: { code: p.code }, create: { ...p, isInstalled: true }, update: {} });
+  }
+  return db.paymentProvider.findUnique({ where: { code: STRIPE_CODE } });
+}
+async function stripeKeys(db) {
+  const provider = await db.paymentProvider.findUnique({ where: { code: STRIPE_CODE }, select: { id: true, isInstalled: true, credentials: true } });
+  const c = provider?.credentials ?? {};
+  return {
+    providerId: provider?.id ?? null,
+    secretKey: c.secretKey || process.env.STRIPE_SECRET_KEY || "",
+    publishableKey: c.publishableKey || process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_STRIPE_KEY || "",
+    webhookSecret: c.webhookSecret || process.env.STRIPE_WEBHOOK_SECRET || ""
+  };
+}
+function registerFulfilment(kind, fn) {
+  fulfilments.set(kind, fn);
+}
+async function fulfilInvoice(tx, invoiceId) {
+  const invoice = await tx.invoice.findUnique({ where: { id: invoiceId } });
+  if (!invoice || invoice.status !== "paid" || invoice.fulfilledAt) return false;
+  const won = await tx.invoice.updateMany({ where: { id: invoiceId, fulfilledAt: null, status: "paid" }, data: { fulfilledAt: /* @__PURE__ */ new Date() } });
+  if (won.count !== 1) return false;
+  const f = invoice.fulfilment ?? {};
+  const fn = f.kind ? fulfilments.get(String(f.kind)) : void 0;
+  if (fn) await fn(tx, invoice, f);
+  return true;
+}
+async function applyPayment(tx, invoiceId, amount) {
+  const r = await applyToInvoice(tx, invoiceId, amount, "amountPaid");
+  if (r.to === "paid") await fulfilInvoice(tx, invoiceId);
+  return r;
+}
+async function ensureCustomer(prisma, keys, familyId) {
+  const family = await prisma.family.findUnique({ where: { id: familyId }, select: { id: true, name: true, billingEmail: true, stripeCustomerId: true, guardians: { select: { email: true }, take: 1 } } });
+  if (!family) throw new CommandError("That family was not found.");
+  if (family.stripeCustomerId) return family.stripeCustomerId;
+  const customer = await createCustomer(keys, { email: family.billingEmail || family.guardians[0]?.email || "", name: family.name, familyId }, `customer:${familyId}`);
+  await prisma.family.updateMany({ where: { id: familyId, stripeCustomerId: "" }, data: { stripeCustomerId: customer.id } });
+  const after = await prisma.family.findUnique({ where: { id: familyId }, select: { stripeCustomerId: true } });
+  return after.stripeCustomerId;
+}
+async function startInvoicePayment(prisma, input) {
+  const keys = await stripeKeys(prisma);
+  if (!keys.secretKey) throw new CommandError("Card payments are not set up yet. Please pay at the centre or ask the owner to add the Stripe keys in Settings \u2192 Payments.");
+  await ensureProviders(prisma);
+  const invoice = await prisma.invoice.findUnique({ where: { id: input.invoiceId }, select: { id: true, number: true, familyId: true, status: true, total: true, amountPaid: true, amountCredited: true, currency: true, kind: true, family: { select: { defaultPaymentMethodId: true, billingEmail: true } } } });
+  if (!invoice || !["open", "partially_paid"].includes(invoice.status)) throw new CommandError("This invoice has nothing to pay.");
+  const amount = amountDue(invoice);
+  if (amount <= 0) throw new CommandError("This invoice has nothing to pay.");
+  const currency = (invoice.currency || "USD").toUpperCase();
+  const customer = await ensureCustomer(prisma, keys, invoice.familyId);
+  const session = await transaction(prisma, async (tx) => {
+    await lockKey(tx, `invoice-pay:${invoice.id}`);
+    if (!input.offSession) {
+      const open = await tx.paymentSession.findFirst({ where: { invoiceId: invoice.id, amount, currencyCode: currency, offSession: false, status: { in: ["pending", "requires_action"] }, createdAt: { gte: new Date(Date.now() - 23 * 36e5) } }, orderBy: { createdAt: "desc" } });
+      if (open) return open;
+    }
+    const keyHash = hash(`invoice:${invoice.id}:${amount}:${input.offSession ? "off" : "on"}:${input.attemptKey || Date.now()}`);
+    const existing = await tx.paymentSession.findUnique({ where: { idempotencyKeyHash: keyHash } });
+    if (existing) return existing;
+    return tx.paymentSession.create({
+      data: {
+        invoice: { connect: { id: invoice.id } },
+        family: { connect: { id: invoice.familyId } },
+        ...keys.providerId ? { paymentProvider: { connect: { id: keys.providerId } } } : {},
+        purpose: "invoice",
+        idempotencyKeyHash: keyHash,
+        status: "pending",
+        amount,
+        currencyCode: currency,
+        offSession: Boolean(input.offSession),
+        metadata: { saveCard: Boolean(input.saveCard), invoiceNumber: invoice.number },
+        ...input.actorId ? { createdBy: { connect: { id: input.actorId } } } : {}
+      }
+    });
+  });
+  if (session.providerPaymentId && session.clientSecret && !input.offSession) {
+    if (input.saveCard && !session.metadata?.saveCard) await prisma.paymentSession.update({ where: { id: session.id }, data: { metadata: { ...session.metadata, saveCard: true } } });
+    return { paymentSessionId: session.id, clientSecret: session.clientSecret, publishableKey: keys.publishableKey, amount, currency, status: session.status, invoiceId: invoice.id };
+  }
+  if (session.providerPaymentId) {
+    const settled2 = await refreshPaymentSession(prisma, session.id);
+    return { paymentSessionId: session.id, clientSecret: session.clientSecret || null, publishableKey: keys.publishableKey, amount, currency, status: settled2.status, invoiceId: invoice.id };
+  }
+  let pi;
+  try {
+    pi = await createPaymentIntent(keys, {
+      amount,
+      currency,
+      customer,
+      description: `Invoice ${invoice.number ?? ""}`.trim(),
+      receiptEmail: invoice.family?.billingEmail,
+      metadata: { paymentSessionId: session.id, invoiceId: invoice.id, familyId: invoice.familyId },
+      offSession: input.offSession,
+      paymentMethod: input.offSession ? invoice.family?.defaultPaymentMethodId : null,
+      saveCard: input.saveCard
+    }, `ps:${session.id}`);
+  } catch (error) {
+    const e = error;
+    const status = e.unclear ? "unknown" : "failed";
+    await prisma.paymentSession.updateMany({ where: { id: session.id, status: "pending" }, data: { status, failureMessage: String(e.message).slice(0, 500) } });
+    await prisma.changeEvent.create({ data: { aggregateType: "PaymentSession", aggregateId: session.id, from: "pending", to: status, reason: e.code || "stripe_error" } });
+    if (e.unclear) throw new CommandError("The card processor did not answer. We will check the payment before trying again.");
+    throw new CommandError(e.declined ? `The card was declined: ${e.message}` : e.message);
+  }
+  await prisma.paymentSession.update({ where: { id: session.id }, data: { providerPaymentId: pi.id, clientSecret: pi.client_secret || "" } });
+  const settled = await settlePaymentIntent(prisma, pi, "create");
+  return { paymentSessionId: session.id, clientSecret: pi.client_secret, publishableKey: keys.publishableKey, amount, currency, status: settled.status, invoiceId: invoice.id };
+}
+function mapStatus(pi) {
+  switch (pi.status) {
+    case "succeeded":
+      return "captured";
+    case "requires_capture":
+      return "authorized";
+    case "requires_action":
+      return "requires_action";
+    case "canceled":
+      return "cancelled";
+    case "requires_payment_method":
+      return pi.last_payment_error ? "failed" : "pending";
+    default:
+      return "pending";
+  }
+}
+async function settlePaymentIntent(prisma, pi, source) {
+  return transaction(prisma, async (tx) => {
+    const byId = await tx.paymentSession.findFirst({ where: { providerPaymentId: pi.id } });
+    const session = byId ?? (pi.metadata?.paymentSessionId ? await tx.paymentSession.findUnique({ where: { id: pi.metadata.paymentSessionId } }) : null);
+    if (!session) return { status: "ignored", paymentId: null, parked: "no payment session for this PaymentIntent", invoiceStatus: null, paymentSessionId: null };
+    await lockKey(tx, `payment-session:${session.id}`);
+    const current = await tx.paymentSession.findUnique({ where: { id: session.id } });
+    const next = mapStatus(pi);
+    const problems = [];
+    if (pi.amount !== current.amount) problems.push(`amount ${pi.amount} != ${current.amount}`);
+    if ((pi.currency || "").toUpperCase() !== (current.currencyCode || "").toUpperCase()) problems.push(`currency ${pi.currency} != ${current.currencyCode}`);
+    if (pi.metadata?.invoiceId && pi.metadata.invoiceId !== current.invoiceId) problems.push("invoice does not match");
+    if (current.providerPaymentId && current.providerPaymentId !== pi.id) problems.push("payment intent does not match");
+    if (problems.length) {
+      const reason = problems.join("; ");
+      if (current.reviewReason !== reason || current.status !== "unknown") {
+        await tx.paymentSession.update({ where: { id: current.id }, data: { status: current.status === "captured" ? current.status : "unknown", reviewReason: reason } });
+        await recordChange(tx, { type: "PaymentSession", id: current.id, from: current.status, to: "unknown", reason: `parked: ${reason}`, data: { source, paymentIntent: pi.id } });
+      }
+      return { status: "parked", paymentId: null, parked: reason, invoiceStatus: null, paymentSessionId: current.id };
+    }
+    if (next !== "captured") {
+      if (current.status !== next && !["captured", "refunded", "partially_refunded"].includes(current.status)) {
+        await tx.paymentSession.updateMany({ where: { id: current.id, status: current.status }, data: { status: next, ...next === "failed" ? { failureMessage: pi.last_payment_error?.message?.slice(0, 500) || "Payment failed" } : {}, ...next === "cancelled" ? { cancelledAt: /* @__PURE__ */ new Date() } : {} } });
+        await recordChange(tx, { type: "PaymentSession", id: current.id, from: current.status, to: next, reason: source });
+      }
+      return { status: next, paymentId: null, parked: null, invoiceStatus: null, paymentSessionId: current.id };
+    }
+    const existing = await tx.payment.findFirst({ where: { OR: [{ paymentSessionId: current.id }, { providerPaymentId: pi.id }] }, select: { id: true } });
+    if (existing) {
+      const inv = current.invoiceId ? await tx.invoice.findUnique({ where: { id: current.invoiceId }, select: { status: true } }) : null;
+      return { status: "captured", paymentId: existing.id, parked: null, invoiceStatus: inv?.status ?? null, paymentSessionId: current.id };
+    }
+    await tx.paymentSession.updateMany({ where: { id: current.id }, data: { status: "captured", capturedAt: /* @__PURE__ */ new Date(), reviewReason: "" } });
+    await recordChange(tx, { type: "PaymentSession", id: current.id, from: current.status, to: "captured", reason: source });
+    const payment = await tx.payment.create({
+      data: {
+        ...current.invoiceId ? { invoice: { connect: { id: current.invoiceId } } } : {},
+        ...current.familyId ? { family: { connect: { id: current.familyId } } } : {},
+        amount: pi.amount,
+        currency: current.currencyCode,
+        method: "card",
+        reference: pi.id,
+        status: "captured",
+        paymentSession: { connect: { id: current.id } },
+        providerPaymentId: pi.id
+      }
+    });
+    await recordChange(tx, { type: "Payment", id: payment.id, to: "captured", reason: source });
+    let invoiceStatus = null;
+    if (current.invoiceId) {
+      try {
+        invoiceStatus = (await applyPayment(tx, current.invoiceId, pi.amount)).to;
+      } catch (error) {
+        if (!(error instanceof CommandError)) throw error;
+        await tx.paymentSession.update({ where: { id: current.id }, data: { reviewReason: "Captured after the invoice was already settled; refund or credit the family." } });
+        invoiceStatus = "overpaid";
+      }
+    }
+    const metadata = current.metadata ?? {};
+    if (metadata.saveCard && pi.payment_method && current.familyId) await saveCardReference(tx, prisma, current.familyId, pi.payment_method);
+    return { status: "captured", paymentId: payment.id, parked: null, invoiceStatus, paymentSessionId: current.id };
+  });
+}
+async function saveCardReference(tx, prisma, familyId, paymentMethodId, label2) {
+  let display = label2 ?? "";
+  if (!display) {
+    try {
+      const keys = await stripeKeys(prisma);
+      const pm = await retrievePaymentMethod(keys, paymentMethodId);
+      display = pm.card ? `${pm.card.brand.toUpperCase()} \u2022\u2022\u2022\u2022 ${pm.card.last4} (${String(pm.card.exp_month).padStart(2, "0")}/${String(pm.card.exp_year).slice(-2)})` : "Saved card";
+    } catch {
+      display = "Saved card";
+    }
+  }
+  await tx.family.update({ where: { id: familyId }, data: { defaultPaymentMethodId: paymentMethodId, defaultPaymentMethodLabel: display } });
+}
+async function refreshPaymentSession(prisma, paymentSessionId) {
+  const session = await prisma.paymentSession.findUnique({ where: { id: paymentSessionId } });
+  if (!session?.providerPaymentId) throw new CommandError("That payment was not found.");
+  const keys = await stripeKeys(prisma);
+  const pi = await retrievePaymentIntent(keys, session.providerPaymentId);
+  return settlePaymentIntent(prisma, pi, "confirm");
+}
+async function requestRefund(tx, input) {
+  const amount = Math.round(input.amount);
+  if (!Number.isSafeInteger(amount) || amount <= 0) throw new CommandError("Enter a refund amount.");
+  const existing = await tx.refund.findUnique({ where: { idempotencyKey: input.key } });
+  if (existing) return existing;
+  const rows = await tx.$executeRaw`
+    UPDATE "Payment" SET "refundedAmount" = COALESCE("refundedAmount", 0) + ${amount},
+      status = CASE WHEN COALESCE("refundedAmount", 0) + ${amount} = amount THEN 'refunded' ELSE 'partially_refunded' END,
+      "updatedAt" = now()
+    WHERE id = ${input.paymentId} AND status IN ('captured', 'partially_refunded') AND COALESCE("refundedAmount", 0) + ${amount} <= amount`;
+  if (rows !== 1) throw new CommandError("That is more than is left to refund on this payment.");
+  const payment = await tx.payment.findUnique({ where: { id: input.paymentId }, select: { method: true, status: true, invoiceId: true, amount: true, refundedAmount: true } });
+  const refund = await tx.refund.create({
+    data: {
+      payment: { connect: { id: input.paymentId } },
+      amount,
+      reason: input.reason.slice(0, 500),
+      idempotencyKey: input.key,
+      // Cash, cheque and transfer refunds are recorded as handed back; card goes to Stripe after commit.
+      status: payment.method === "card" ? "requested" : "succeeded",
+      ...input.actorId ? { requestedBy: { connect: { id: input.actorId } } } : {}
+    }
+  });
+  await recordChange(tx, { type: "Payment", id: input.paymentId, to: payment.status, actorId: input.actorId, reason: "refund", data: { refundId: refund.id, amount } });
+  return refund;
+}
+async function processRefund(prisma, refundId) {
+  const refund = await prisma.refund.findUnique({ where: { id: refundId }, include: { payment: { select: { providerPaymentId: true, method: true } } } });
+  if (!refund || refund.status !== "requested" || refund.payment?.method !== "card") return refund?.status ?? null;
+  const keys = await stripeKeys(prisma);
+  try {
+    const r = await createRefund(keys, { paymentIntent: refund.payment.providerPaymentId, amount: refund.amount, reason: refund.reason, metadata: { refundId: refund.id } }, `refund:${refund.id}`);
+    const status = r.status === "succeeded" || r.status === "pending" ? "succeeded" : "failed";
+    await prisma.refund.updateMany({ where: { id: refund.id, status: "requested" }, data: { status, providerRefundId: r.id, failureReason: status === "failed" ? r.status : "" } });
+    if (status === "failed") await releaseRefundReservation(prisma, refund.id);
+    return status;
+  } catch (error) {
+    const e = error;
+    if (e.unclear) {
+      await prisma.refund.updateMany({ where: { id: refund.id, status: "requested" }, data: { status: "unknown", failureReason: e.message.slice(0, 500) } });
+      return "unknown";
+    }
+    await prisma.refund.updateMany({ where: { id: refund.id, status: "requested" }, data: { status: "failed", failureReason: e.message.slice(0, 500) } });
+    await releaseRefundReservation(prisma, refund.id);
+    return "failed";
+  }
+}
+async function releaseRefundReservation(prisma, refundId) {
+  await transaction(prisma, async (tx) => {
+    const refund = await tx.refund.findUnique({ where: { id: refundId }, select: { paymentId: true, amount: true } });
+    await tx.$executeRaw`
+      UPDATE "Payment" SET "refundedAmount" = GREATEST(0, COALESCE("refundedAmount", 0) - ${refund.amount}),
+        status = CASE WHEN COALESCE("refundedAmount", 0) - ${refund.amount} <= 0 THEN 'captured' ELSE 'partially_refunded' END, "updatedAt" = now()
+      WHERE id = ${refund.paymentId}`;
+    await recordChange(tx, { type: "Refund", id: refundId, from: "requested", to: "failed", reason: "provider refused" });
+  });
+}
+async function voidInvoiceIfUnpaid(tx, invoiceId, reason, actorId) {
+  const r = await tx.invoice.updateMany({ where: { id: invoiceId, status: { in: ["open", "draft"] }, amountPaid: 0 }, data: { status: "void", notes: reason.slice(0, 500) } });
+  if (r.count) {
+    await recordChange(tx, { type: "Invoice", id: invoiceId, from: "open", to: "void", actorId, reason });
+    await tx.paymentSession.updateMany({ where: { invoiceId, status: { in: ["pending", "requires_action"] } }, data: { status: "cancelled", cancelledAt: /* @__PURE__ */ new Date() } });
+  }
+  return r.count === 1;
+}
+var import_node_crypto4, STRIPE_CODE, hash, fulfilments;
+var init_payments = __esm({
+  "features/keystone/lib/payments.ts"() {
+    "use strict";
+    import_node_crypto4 = require("node:crypto");
+    init_stripe();
+    init_command();
+    init_errors();
+    init_invoices();
+    STRIPE_CODE = "pp_stripe";
+    hash = (s) => (0, import_node_crypto4.createHash)("sha256").update(s).digest("hex");
+    fulfilments = /* @__PURE__ */ new Map();
   }
 });
 
@@ -1676,7 +2413,7 @@ var Task = (0, import_core8.list)({
   access: scopedAccess({ read: "canAccessDashboard", write: "canAccessDashboard", location: "location", noDelete: true }),
   ui: { listView: { initialColumns: ["kind", "family", "student", "dueAt", "status", "owner"] } },
   fields: {
-    kind: choice(["no_show_follow_up", "absence_streak", "low_balance", "failed_payment", "assessment_follow_up", "proposal_follow_up", "first_week_check_in", "membership_ending", "credential_expiring", "needs_cover", "rematch_requested", "pause_requested", "cancel_requested", "manual"], "manual"),
+    kind: choice(["no_show_follow_up", "absence_streak", "low_balance", "failed_payment", "assessment_follow_up", "proposal_follow_up", "first_week_check_in", "membership_ending", "credential_expiring", "needs_cover", "rematch_requested", "pause_requested", "cancel_requested", "lead_follow_up", "billing_review", "schedule_problem", "manual"], "manual"),
     title: (0, import_fields13.text)({ validation: { isRequired: true } }),
     family: (0, import_fields13.relationship)({ ref: "Family.tasks" }),
     student: (0, import_fields13.relationship)({ ref: "Student" }),
@@ -2151,155 +2888,13 @@ __export(schedule_exports, {
   resolvers: () => resolvers,
   typeDefs: () => typeDefs
 });
-
-// features/keystone/lib/command.ts
-var import_node_crypto2 = require("node:crypto");
-
-// features/keystone/lib/json.ts
-function canonicalJson(value) {
-  if (value instanceof Date) return JSON.stringify(value.toISOString());
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    const record = value;
-    return `{${Object.keys(record).filter((k) => record[k] !== void 0).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
-  }
-  return JSON.stringify(value) ?? "null";
-}
-
-// features/keystone/lib/command.ts
-init_actor();
-init_errors();
-var TX_OPTIONS = { maxWait: 6e4, timeout: 12e4 };
-function isRetryable(error) {
-  const code = error?.code;
-  return code === "P2034" || /deadlock detected|could not serialize/i.test(String(error?.message || ""));
-}
-async function transaction(prisma, fn, attempts = 6) {
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      return await prisma.$transaction(fn, TX_OPTIONS);
-    } catch (error) {
-      if (!isRetryable(error) || attempt >= attempts) throw error;
-      await new Promise((resolve) => setTimeout(resolve, Math.min(400, 20 * 2 ** attempt) + Math.floor(Math.random() * 25)));
-    }
-  }
-}
-async function lockKey(tx, key) {
-  await tx.$queryRaw`SELECT true AS locked FROM (SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))) AS acquired`;
-}
-async function cas(tx, model, id, from, data, message) {
-  const expected = Array.isArray(from) ? from : [from];
-  const result = await tx[model].updateMany({ where: { id, status: { in: expected } }, data });
-  if (result.count !== 1) throw new CommandError(message || "This record was changed by someone else. Reload and try again.");
-}
-async function recordChange(tx, input) {
-  await tx.changeEvent.create({
-    data: {
-      aggregateType: input.type,
-      aggregateId: input.id,
-      from: input.from ?? "",
-      to: input.to ?? "",
-      reason: input.reason ?? "",
-      data: input.data ?? {},
-      at: /* @__PURE__ */ new Date(),
-      ...input.actorId ? { actor: { connect: { id: input.actorId } }, createdBy: { connect: { id: input.actorId } } } : {}
-    }
-  });
-}
-async function transition(tx, actor, model, type, id, from, to, extra = {}, reason) {
-  const current = await tx[model].findUnique({ where: { id }, select: { status: true } });
-  if (!current) throw new CommandError("That record was not found.");
-  const expected = Array.isArray(from) ? from : [from];
-  if (!expected.includes(current.status)) throw new CommandError(`This ${type.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase()} is ${current.status.replace(/_/g, " ")}; it cannot move to ${to.replace(/_/g, " ")}.`);
-  await cas(tx, model, id, expected, { ...extra, status: to });
-  await recordChange(tx, { type, id, from: current.status, to, actorId: actor?.userId, reason });
-}
-function isUnique(error) {
-  return error?.code === "P2002";
-}
-async function runCommand(context, options2, fn) {
-  const prisma = context.sudo().prisma;
-  let after;
-  try {
-    const actor = context.session?.itemId ? await loadActor(prisma, context.session.itemId) : null;
-    if (!actor && !options2.allowAnonymous) throw new CommandError("Sign in to continue.");
-    const key = typeof options2.idempotencyKey === "string" ? options2.idempotencyKey.trim() : "";
-    if (key && (key.length < 8 || key.length > 200)) throw new CommandError("The idempotency key must be 8 to 200 characters.");
-    const outcome = await transaction(prisma, async (tx) => {
-      let eventKey = "";
-      let payloadHash = "";
-      if (key) {
-        eventKey = `${options2.name}:${actor?.userId ?? "public"}:${key}`;
-        payloadHash = (0, import_node_crypto2.createHash)("sha256").update(canonicalJson({ name: options2.name, input: options2.input })).digest("hex");
-        await lockKey(tx, `command-receipt:${eventKey}`);
-        const existing = await tx.commandReceipt.findUnique({ where: { eventKey } });
-        if (existing) {
-          if (existing.payloadHash !== payloadHash) throw new CommandError("This idempotency key was already used with different details.");
-          return { replay: true, result: existing.result };
-        }
-      }
-      const value = await fn(tx, actor);
-      const result = { success: !value.refusal, error: value.refusal ?? null, id: value.id ?? null, data: value.data ?? null };
-      if (key) {
-        await tx.commandReceipt.create({
-          data: {
-            eventKey,
-            eventType: options2.name,
-            schemaVersion: 1,
-            aggregateType: options2.name,
-            aggregateId: value.id ?? "",
-            payload: { input: options2.input ?? null },
-            result,
-            actorId: actor?.userId ?? "",
-            payloadHash,
-            occurredAt: /* @__PURE__ */ new Date()
-          }
-        });
-      }
-      after = value.after;
-      return { replay: false, result };
-    });
-    if (!outcome.replay && after) {
-      try {
-        await after();
-      } catch (error) {
-        console.error(`${options2.name}: after-commit step failed`, error?.message);
-      }
-    }
-    return outcome.result;
-  } catch (error) {
-    if (error instanceof CommandError) return { success: false, error: error.message, id: null, data: error.data ?? null };
-    if (isUnique(error)) return { success: false, error: options2.conflictMessage || "That conflicts with an existing record.", id: null, data: null };
-    console.error(`${options2.name} failed:`, error?.message);
-    return { success: false, error: "Something went wrong. Please try again.", id: null, data: null };
-  }
-}
-function requireString(value, label2, max = 500) {
-  const text10 = typeof value === "string" ? value.trim() : "";
-  if (!text10) throw new CommandError(`${label2} is required.`);
-  if (text10.length > max) throw new CommandError(`${label2} is too long.`);
-  return text10;
-}
-function optionalString(value, max = 2e3) {
-  return typeof value === "string" ? value.trim().slice(0, max) : "";
-}
-function requireInt(value, label2, min = 0, max = Number.MAX_SAFE_INTEGER) {
-  const n = Number(value);
-  if (!Number.isInteger(n) || n < min || n > max) throw new CommandError(`${label2} must be a whole number${min === 0 ? "" : ` from ${min}`}.`);
-  return n;
-}
-function requireDate(value, label2) {
-  const date = value instanceof Date ? value : new Date(String(value ?? ""));
-  if (Number.isNaN(date.getTime())) throw new CommandError(`${label2} is not a valid date.`);
-  return date;
-}
-
-// features/keystone/mutations/schedule.ts
+init_command();
 init_errors();
 init_actor();
 
 // features/keystone/lib/booking.ts
 init_errors();
+init_command();
 
 // features/keystone/lib/ledger.ts
 init_errors();
@@ -2411,6 +3006,27 @@ async function removeUnused(tx, grantId, type, status, actorId, note = "") {
   if (minutes > 0) await entry(tx, { grantId, type, minutes: -minutes, note, actorId });
   return minutes;
 }
+async function rollOverGrant(tx, grantId, into, allow) {
+  const g = await tx.creditGrant.findUnique({ where: { id: grantId }, select: { id: true, familyId: true, studentId: true, programId: true, membershipId: true, minutesAvailable: true, status: true, rolledFromId: true, unlimited: true } });
+  if (!g || g.unlimited || !["active", "exhausted"].includes(g.status)) return 0;
+  if (!allow || g.rolledFromId || g.minutesAvailable <= 0) {
+    await expireGrant(tx, g.id, g.rolledFromId ? "Rolled-over credit expires after one period" : "Period ended");
+    return 0;
+  }
+  const minutes = g.minutesAvailable;
+  const rows = await tx.creditGrant.updateMany({ where: { id: g.id, minutesAvailable: minutes, status: g.status }, data: { minutesAvailable: 0, status: "expired" } });
+  if (rows.count !== 1) throw new CommandError("Credit changed while rolling over; retry.");
+  await entry(tx, { grantId: g.id, type: "rollover_out", minutes: -minutes, note: "Rolled into the next period" });
+  await createGrant(tx, { familyId: g.familyId, studentId: g.studentId, programId: g.programId, membershipId: g.membershipId, kind: "membership_period", minutes, periodStart: into.periodStart, periodEnd: into.periodEnd, expiresAt: into.periodEnd, rolledFromId: g.id, note: "Unused credit from the last period" });
+  return minutes;
+}
+async function adjustGrant(tx, grantId, minutes, actorId, note) {
+  const rows = await tx.$executeRaw`UPDATE "CreditGrant" SET "minutesAvailable" = "minutesAvailable" + ${minutes},
+    "status" = CASE WHEN "minutesAvailable" + ${minutes} = 0 THEN 'exhausted' WHEN status = 'exhausted' THEN 'active' ELSE status END, "updatedAt" = now()
+    WHERE id = ${grantId} AND status IN ('active','exhausted') AND "minutesAvailable" + ${minutes} >= 0`;
+  if (rows !== 1) throw new CommandError("That adjustment would make the balance negative.");
+  await entry(tx, { grantId, type: "adjustment", minutes, note, actorId });
+}
 async function pickGrant(tx, input) {
   const grants = await tx.creditGrant.findMany({
     where: {
@@ -2420,7 +3036,9 @@ async function pickGrant(tx, input) {
       AND: [
         { OR: [{ programId: input.programId }, { programId: null }] },
         { OR: [{ expiresAt: null }, { expiresAt: { gte: input.startsAt } }] },
-        { OR: [{ periodStart: null }, { periodStart: { lte: input.startsAt } }] }
+        { OR: [{ periodStart: null }, { periodStart: { lte: input.startsAt } }] },
+        // W6.3: past due holds back bookings beyond 7 days; suspended or ended memberships fund nothing.
+        { OR: [{ membershipId: null }, { membership: { status: { in: ["active", "cancelling", "paused"] } } }, ...input.startsAt.getTime() - Date.now() <= 7 * 864e5 ? [{ membership: { status: "past_due" } }] : []] }
       ]
     },
     select: { id: true, kind: true, unlimited: true, weeklyCap: true, minutesAvailable: true, expiresAt: true, createdAt: true }
@@ -2448,59 +3066,8 @@ function weekOf(at) {
   return { start, end: new Date(start.getTime() + 7 * 864e5) };
 }
 
-// features/keystone/lib/settings.ts
-var DEFAULT_SETTINGS = {
-  cancellationWindowHours: 24,
-  lateCancelCharged: true,
-  noShowCharged: true,
-  excusedAbsencesPerMonth: 1,
-  makeUpExpiryDays: 60,
-  membershipRolloverPeriods: 1,
-  membershipCancelNoticeDays: 30,
-  pauseMinDays: 14,
-  pauseMaxDays: 28,
-  pausesPerYear: 1,
-  pastDueRetryDays: [3, 7],
-  suspendAfterDays: 10,
-  siblingDiscountPercent: 10,
-  offerExpiryHours: 24,
-  freeRematches: 1,
-  trialChargedOnRematch: false,
-  tutorPaidOnLateCancelPercent: 100,
-  tutorPaidOnNoShowPercent: 100,
-  payrollPeriodDays: 14,
-  progressReportEverySessions: 12,
-  progressReportEveryWeeks: 4,
-  reassessEveryWeeks: 12,
-  lowBalanceMinutes: 120,
-  bookingHorizonDays: 42,
-  attendanceEditWindowHours: 48,
-  assessmentCancelRefundHours: 24,
-  assessmentFeeKeptOnLateCancel: true,
-  enrolmentFeeWaivedWithinDays: 90,
-  frontDeskRefundLimit: 0,
-  reopenWindowDays: 14,
-  policiesText: "",
-  jobsSecretHash: "",
-  lastDailyJobsAt: null
-};
-async function getSettings(db) {
-  const row = await db.businessSettings.findUnique({ where: { id: 1 } });
-  const merged = { ...DEFAULT_SETTINGS };
-  if (row) {
-    for (const key of Object.keys(DEFAULT_SETTINGS)) if (row[key] !== null && row[key] !== void 0) merged[key] = row[key];
-  }
-  if (!Array.isArray(merged.pastDueRetryDays)) merged.pastDueRetryDays = DEFAULT_SETTINGS.pastDueRetryDays;
-  return merged;
-}
-async function getBusiness(db) {
-  const row = await db.business.findUnique({ where: { id: 1 } });
-  return row ?? { id: 1, name: "", currency: "USD", country: "US", nextInvoiceNumber: 1001, supportEmail: "", careersEmail: "" };
-}
-var HOUR = 36e5;
-var DAY = 24 * HOUR;
-
 // features/keystone/lib/pay.ts
+init_settings();
 async function rateFor(tx, tutorId, subjectId) {
   if (subjectId) {
     const ts = await tx.tutorSubject.findFirst({ where: { tutorId, subjectId }, select: { payRate: true } });
@@ -2581,87 +3148,9 @@ async function adjustmentLine(tx, input) {
   });
 }
 
-// features/keystone/lib/invoices.ts
-init_errors();
-async function nextNumber(tx) {
-  await tx.business.upsert({ where: { id: 1 }, create: { id: 1 }, update: {} });
-  const rows = await tx.$queryRaw`
-    UPDATE "Business" SET "nextInvoiceNumber" = COALESCE("nextInvoiceNumber", 1001) + 1 WHERE id = 1
-    RETURNING COALESCE("nextInvoiceNumber", 1002) - 1 AS n`;
-  return Number(rows[0].n);
-}
-async function createInvoice(tx, input) {
-  if (!input.lines.length) throw new CommandError("An invoice needs at least one line.");
-  const business = await getBusiness(tx);
-  let taxRate = 0;
-  if (input.locationId) {
-    const loc = await tx.location.findUnique({ where: { id: input.locationId }, select: { taxRatePercent: true } });
-    taxRate = Number(loc?.taxRatePercent ?? 0);
-  }
-  const lines = input.lines.map((l) => ({ ...l, quantity: l.quantity ?? 1, amount: (l.quantity ?? 1) * l.unitAmount }));
-  const subtotal = lines.filter((l) => l.amount > 0).reduce((s, l) => s + l.amount, 0);
-  const lineDiscount = -lines.filter((l) => l.amount < 0).reduce((s, l) => s + l.amount, 0);
-  const discount = Math.min(subtotal, (input.discount ?? 0) + lineDiscount);
-  const tax = Math.round((subtotal - discount) * taxRate / 100);
-  const total = subtotal - discount + tax;
-  const status = input.status ?? "open";
-  const invoice = await tx.invoice.create({
-    data: {
-      number: await nextNumber(tx),
-      family: { connect: { id: input.familyId } },
-      ...input.locationId ? { location: { connect: { id: input.locationId } } } : {},
-      ...input.promoCodeId ? { promoCode: { connect: { id: input.promoCodeId } } } : {},
-      ...input.actorId ? { createdBy: { connect: { id: input.actorId } } } : {},
-      kind: input.kind,
-      status,
-      issuedAt: status === "open" ? /* @__PURE__ */ new Date() : null,
-      dueAt: input.dueAt ?? /* @__PURE__ */ new Date(),
-      subtotal,
-      discount,
-      tax,
-      total,
-      currency: business.currency || "USD",
-      fulfilment: input.fulfilment ?? {},
-      notes: input.notes ?? "",
-      lines: {
-        create: lines.map((l) => ({
-          description: l.description,
-          kind: l.kind,
-          quantity: l.quantity,
-          unitAmount: l.unitAmount,
-          amount: l.amount,
-          ...l.studentId ? { student: { connect: { id: l.studentId } } } : {},
-          ...l.programId ? { program: { connect: { id: l.programId } } } : {},
-          ...l.bookingId ? { booking: { connect: { id: l.bookingId } } } : {},
-          ...l.membershipId ? { membership: { connect: { id: l.membershipId } } } : {},
-          ...l.studentPackageId ? { studentPackage: { connect: { id: l.studentPackageId } } } : {},
-          ...l.assessmentId ? { assessment: { connect: { id: l.assessmentId } } } : {}
-        }))
-      }
-    }
-  });
-  return invoice;
-}
-function amountDue(inv) {
-  return Math.max(0, inv.total - inv.amountPaid - inv.amountCredited);
-}
-async function applyToInvoice(tx, invoiceId, amount, field = "amountPaid") {
-  const col = field === "amountPaid" ? "amountPaid" : "amountCredited";
-  const rows = col === "amountPaid" ? await tx.$executeRaw`UPDATE "Invoice" SET "amountPaid" = "amountPaid" + ${amount}, "updatedAt" = now()
-        WHERE id = ${invoiceId} AND status IN ('open','partially_paid') AND "amountPaid" + "amountCredited" + ${amount} <= total` : await tx.$executeRaw`UPDATE "Invoice" SET "amountCredited" = "amountCredited" + ${amount}, "updatedAt" = now()
-        WHERE id = ${invoiceId} AND status IN ('open','partially_paid','paid') AND "amountPaid" + "amountCredited" + ${amount} <= total`;
-  if (rows !== 1) throw new CommandError(field === "amountPaid" ? "That is more than the amount due on this invoice." : "That credit note is more than the invoice total less payments.");
-  const inv = await tx.invoice.findUnique({ where: { id: invoiceId }, select: { status: true, total: true, amountPaid: true, amountCredited: true } });
-  const due = amountDue(inv);
-  const next = due === 0 ? "paid" : inv.amountPaid + inv.amountCredited > 0 ? "partially_paid" : "open";
-  if (next !== inv.status) {
-    await tx.invoice.updateMany({ where: { id: invoiceId, status: inv.status }, data: { status: next } });
-    await tx.changeEvent.create({ data: { aggregateType: "Invoice", aggregateId: invoiceId, from: inv.status, to: next, reason: field, data: { amount } } });
-  }
-  return { from: inv.status, to: next };
-}
-
 // features/keystone/lib/booking.ts
+init_invoices();
+init_settings();
 var activeKeyFor = (sessionId, studentId) => `${sessionId}:${studentId}`;
 async function lockSession(tx, sessionId) {
   const rows = await tx.$queryRaw`SELECT id FROM "Session" WHERE id = ${sessionId} FOR UPDATE`;
@@ -2922,6 +3411,8 @@ async function reopenSeat(tx, actor, bookingId, correctedStatus, reason) {
 // features/keystone/lib/schedule.ts
 var import_tz = require("@date-fns/tz");
 init_errors();
+init_command();
+init_settings();
 function localStart(day, startMinute, timezone) {
   return new Date(new import_tz.TZDate(day.y, day.m, day.d, Math.floor(startMinute / 60), startMinute % 60, timezone).getTime());
 }
@@ -3012,6 +3503,7 @@ async function generateSessions(tx, seriesId, through) {
 }
 
 // features/keystone/mutations/schedule.ts
+init_settings();
 var gql = String.raw;
 var typeDefs = gql`
   type CommandResult {
@@ -3256,12 +3748,15 @@ __export(assessments_exports, {
   resolvers: () => resolvers2,
   typeDefs: () => typeDefs2
 });
+init_command();
 init_errors();
 init_actor();
 
 // features/keystone/lib/assessments.ts
 var import_tz2 = require("@date-fns/tz");
 init_errors();
+init_command();
+init_settings();
 var SLOT_TAKEN = "That time was just taken. Please pick another.";
 var OPEN_ASSESSMENT = ["scheduled", "in_progress"];
 async function timezoneFor(tx, locationId) {
@@ -3363,418 +3858,12 @@ async function customerRoleId(tx) {
   return created.id;
 }
 
-// features/keystone/lib/payments.ts
-var import_node_crypto4 = require("node:crypto");
-
-// features/integrations/payment/stripe.ts
-var stripe_exports = {};
-__export(stripe_exports, {
-  StripeError: () => StripeError,
-  attachPaymentMethod: () => attachPaymentMethod,
-  cancelPaymentIntent: () => cancelPaymentIntent,
-  confirmPaymentIntent: () => confirmPaymentIntent,
-  createCustomer: () => createCustomer,
-  createPaymentIntent: () => createPaymentIntent,
-  createRefund: () => createRefund,
-  createSetupIntent: () => createSetupIntent,
-  listPaymentIntentsByMetadata: () => listPaymentIntentsByMetadata,
-  retrievePaymentIntent: () => retrievePaymentIntent,
-  retrievePaymentMethod: () => retrievePaymentMethod,
-  retrieveSetupIntent: () => retrieveSetupIntent,
-  signStripePayload: () => signStripePayload,
-  verifyStripeSignature: () => verifyStripeSignature
-});
-var import_node_crypto3 = require("node:crypto");
-var API = "https://api.stripe.com/v1";
-var StripeError = class extends Error {
-  constructor(message, status, code, declined, unclear) {
-    super(message);
-    this.status = status;
-    this.code = code;
-    this.declined = declined;
-    this.unclear = unclear;
-  }
-};
-function form(values) {
-  const body = new URLSearchParams();
-  for (const [key, value] of Object.entries(values)) if (value !== void 0 && value !== null && value !== "") body.append(key, String(value));
-  return body;
-}
-async function call(keys, path, init = {}) {
-  if (!keys.secretKey) throw new StripeError("Card payments are not set up yet. Add the Stripe keys in Settings \u2192 Payments.", 0, "not_configured", false, false);
-  let response;
-  try {
-    response = await fetch(`${API}${path}`, {
-      method: init.method || "GET",
-      headers: {
-        Authorization: `Bearer ${keys.secretKey}`,
-        "Stripe-Version": "2024-06-20",
-        ...init.body ? { "Content-Type": "application/x-www-form-urlencoded" } : {},
-        ...init.idempotencyKey ? { "Idempotency-Key": init.idempotencyKey } : {}
-      },
-      body: init.body,
-      redirect: "error",
-      signal: AbortSignal.timeout(3e4)
-    });
-  } catch (error) {
-    throw new StripeError(`Stripe did not answer: ${error?.message || "network error"}`, 0, "network", false, true);
-  }
-  const json9 = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const e = json9.error ?? {};
-    throw new StripeError(e.message || `Stripe request failed (${response.status}).`, response.status, e.code || e.decline_code || null, e.type === "card_error", response.status >= 500 || response.status === 429);
-  }
-  return json9;
-}
-var meta = (m = {}) => Object.fromEntries(Object.entries(m).filter(([, v]) => v != null && v !== "").map(([k, v]) => [`metadata[${k}]`, String(v)]));
-function createCustomer(keys, input, idempotencyKey) {
-  return call(keys, "/customers", { method: "POST", idempotencyKey, body: form({ email: input.email, name: input.name, ...meta({ familyId: input.familyId }) }) });
-}
-function createPaymentIntent(keys, input, idempotencyKey) {
-  const cents = Math.round(input.amount);
-  if (!Number.isSafeInteger(cents) || cents <= 0) throw new StripeError("Payment amount must be greater than zero.", 400, "amount", false, false);
-  return call(keys, "/payment_intents", {
-    method: "POST",
-    idempotencyKey,
-    body: form({
-      amount: cents,
-      currency: input.currency.toLowerCase(),
-      description: input.description,
-      customer: input.customer || void 0,
-      receipt_email: input.receiptEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.receiptEmail) ? input.receiptEmail : void 0,
-      ...input.offSession ? { payment_method: input.paymentMethod || void 0, off_session: "true", confirm: "true", "payment_method_types[0]": "card" } : { "automatic_payment_methods[enabled]": "true", "automatic_payment_methods[allow_redirects]": "never", ...input.saveCard && input.customer ? { setup_future_usage: "off_session" } : {} },
-      ...meta(input.metadata)
-    })
-  });
-}
-function retrievePaymentIntent(keys, id) {
-  return call(keys, `/payment_intents/${encodeURIComponent(id)}`);
-}
-function confirmPaymentIntent(keys, id, paymentMethod, idempotencyKey) {
-  return call(keys, `/payment_intents/${encodeURIComponent(id)}/confirm`, { method: "POST", idempotencyKey, body: form({ payment_method: paymentMethod }) });
-}
-function cancelPaymentIntent(keys, id) {
-  return call(keys, `/payment_intents/${encodeURIComponent(id)}/cancel`, { method: "POST" });
-}
-function listPaymentIntentsByMetadata(keys, key, value) {
-  const q = encodeURIComponent(`metadata['${key}']:'${value.replace(/'/g, "")}'`);
-  return call(keys, `/payment_intents/search?query=${q}&limit=10`);
-}
-function createSetupIntent(keys, input, idempotencyKey) {
-  return call(keys, "/setup_intents", { method: "POST", idempotencyKey, body: form({ customer: input.customer, usage: "off_session", "automatic_payment_methods[enabled]": "true", "automatic_payment_methods[allow_redirects]": "never", ...meta(input.metadata) }) });
-}
-function retrieveSetupIntent(keys, id) {
-  return call(keys, `/setup_intents/${encodeURIComponent(id)}`);
-}
-function retrievePaymentMethod(keys, id) {
-  return call(keys, `/payment_methods/${encodeURIComponent(id)}`);
-}
-function attachPaymentMethod(keys, id, customer) {
-  return call(keys, `/payment_methods/${encodeURIComponent(id)}/attach`, { method: "POST", body: form({ customer }) });
-}
-function createRefund(keys, input, idempotencyKey) {
-  return call(keys, "/refunds", { method: "POST", idempotencyKey, body: form({ payment_intent: input.paymentIntent, amount: Math.round(input.amount), ...meta({ ...input.metadata ?? {}, note: input.reason }) }) });
-}
-function verifyStripeSignature(rawBody, header, secret2, toleranceSeconds = 300, now = Date.now()) {
-  if (!rawBody.byteLength || !header || !secret2) return false;
-  const parts = header.split(",").map((p) => p.trim().split("="));
-  const t = parts.find(([k]) => k === "t")?.[1];
-  const signatures = parts.filter(([k]) => k === "v1").map(([, v]) => v).filter((v) => typeof v === "string" && /^[a-f0-9]{64}$/i.test(v));
-  if (!t || !/^\d+$/.test(t) || !signatures.length) return false;
-  if (Math.abs(now / 1e3 - Number(t)) > toleranceSeconds) return false;
-  const expected = (0, import_node_crypto3.createHmac)("sha256", secret2).update(`${t}.`).update(rawBody).digest();
-  return signatures.some((s) => {
-    const received = Buffer.from(s, "hex");
-    return received.length === expected.length && (0, import_node_crypto3.timingSafeEqual)(received, expected);
-  });
-}
-function signStripePayload(rawBody, secret2, t = Math.floor(Date.now() / 1e3)) {
-  return `t=${t},v1=${(0, import_node_crypto3.createHmac)("sha256", secret2).update(`${t}.${rawBody}`).digest("hex")}`;
-}
-
-// features/keystone/lib/payments.ts
-init_errors();
-var STRIPE_CODE = "pp_stripe";
-async function ensureProviders(db) {
-  for (const p of [{ code: STRIPE_CODE, name: "Card (Stripe)", isDefault: true }, { code: "pp_manual", name: "Cash, cheque or bank transfer", isDefault: false }]) {
-    await db.paymentProvider.upsert({ where: { code: p.code }, create: { ...p, isInstalled: true }, update: {} });
-  }
-  return db.paymentProvider.findUnique({ where: { code: STRIPE_CODE } });
-}
-async function stripeKeys(db) {
-  const provider = await db.paymentProvider.findUnique({ where: { code: STRIPE_CODE }, select: { id: true, isInstalled: true, credentials: true } });
-  const c = provider?.credentials ?? {};
-  return {
-    providerId: provider?.id ?? null,
-    secretKey: c.secretKey || process.env.STRIPE_SECRET_KEY || "",
-    publishableKey: c.publishableKey || process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_STRIPE_KEY || "",
-    webhookSecret: c.webhookSecret || process.env.STRIPE_WEBHOOK_SECRET || ""
-  };
-}
-var hash = (s) => (0, import_node_crypto4.createHash)("sha256").update(s).digest("hex");
-var fulfilments = /* @__PURE__ */ new Map();
-function registerFulfilment(kind, fn) {
-  fulfilments.set(kind, fn);
-}
-async function fulfilInvoice(tx, invoiceId) {
-  const invoice = await tx.invoice.findUnique({ where: { id: invoiceId } });
-  if (!invoice || invoice.status !== "paid" || invoice.fulfilledAt) return false;
-  const won = await tx.invoice.updateMany({ where: { id: invoiceId, fulfilledAt: null, status: "paid" }, data: { fulfilledAt: /* @__PURE__ */ new Date() } });
-  if (won.count !== 1) return false;
-  const f = invoice.fulfilment ?? {};
-  const fn = f.kind ? fulfilments.get(String(f.kind)) : void 0;
-  if (fn) await fn(tx, invoice, f);
-  return true;
-}
-async function applyPayment(tx, invoiceId, amount) {
-  const r = await applyToInvoice(tx, invoiceId, amount, "amountPaid");
-  if (r.to === "paid") await fulfilInvoice(tx, invoiceId);
-  return r;
-}
-async function ensureCustomer(prisma, keys, familyId) {
-  const family = await prisma.family.findUnique({ where: { id: familyId }, select: { id: true, name: true, billingEmail: true, stripeCustomerId: true, guardians: { select: { email: true }, take: 1 } } });
-  if (!family) throw new CommandError("That family was not found.");
-  if (family.stripeCustomerId) return family.stripeCustomerId;
-  const customer = await createCustomer(keys, { email: family.billingEmail || family.guardians[0]?.email || "", name: family.name, familyId }, `customer:${familyId}`);
-  await prisma.family.updateMany({ where: { id: familyId, stripeCustomerId: "" }, data: { stripeCustomerId: customer.id } });
-  const after = await prisma.family.findUnique({ where: { id: familyId }, select: { stripeCustomerId: true } });
-  return after.stripeCustomerId;
-}
-async function startInvoicePayment(prisma, input) {
-  const keys = await stripeKeys(prisma);
-  if (!keys.secretKey) throw new CommandError("Card payments are not set up yet. Please pay at the centre or ask the owner to add the Stripe keys in Settings \u2192 Payments.");
-  await ensureProviders(prisma);
-  const invoice = await prisma.invoice.findUnique({ where: { id: input.invoiceId }, select: { id: true, number: true, familyId: true, status: true, total: true, amountPaid: true, amountCredited: true, currency: true, kind: true, family: { select: { defaultPaymentMethodId: true, billingEmail: true } } } });
-  if (!invoice || !["open", "partially_paid"].includes(invoice.status)) throw new CommandError("This invoice has nothing to pay.");
-  const amount = amountDue(invoice);
-  if (amount <= 0) throw new CommandError("This invoice has nothing to pay.");
-  const currency = (invoice.currency || "USD").toUpperCase();
-  const customer = await ensureCustomer(prisma, keys, invoice.familyId);
-  const session = await transaction(prisma, async (tx) => {
-    await lockKey(tx, `invoice-pay:${invoice.id}`);
-    if (!input.offSession) {
-      const open = await tx.paymentSession.findFirst({ where: { invoiceId: invoice.id, amount, currencyCode: currency, offSession: false, status: { in: ["pending", "requires_action"] }, createdAt: { gte: new Date(Date.now() - 23 * 36e5) } }, orderBy: { createdAt: "desc" } });
-      if (open) return open;
-    }
-    const keyHash = hash(`invoice:${invoice.id}:${amount}:${input.offSession ? "off" : "on"}:${input.attemptKey || Date.now()}`);
-    const existing = await tx.paymentSession.findUnique({ where: { idempotencyKeyHash: keyHash } });
-    if (existing) return existing;
-    return tx.paymentSession.create({
-      data: {
-        invoice: { connect: { id: invoice.id } },
-        family: { connect: { id: invoice.familyId } },
-        ...keys.providerId ? { paymentProvider: { connect: { id: keys.providerId } } } : {},
-        purpose: "invoice",
-        idempotencyKeyHash: keyHash,
-        status: "pending",
-        amount,
-        currencyCode: currency,
-        offSession: Boolean(input.offSession),
-        metadata: { saveCard: Boolean(input.saveCard), invoiceNumber: invoice.number },
-        ...input.actorId ? { createdBy: { connect: { id: input.actorId } } } : {}
-      }
-    });
-  });
-  if (session.providerPaymentId && session.clientSecret && !input.offSession) {
-    if (input.saveCard && !session.metadata?.saveCard) await prisma.paymentSession.update({ where: { id: session.id }, data: { metadata: { ...session.metadata, saveCard: true } } });
-    return { paymentSessionId: session.id, clientSecret: session.clientSecret, publishableKey: keys.publishableKey, amount, currency, status: session.status, invoiceId: invoice.id };
-  }
-  if (session.providerPaymentId) {
-    const settled2 = await refreshPaymentSession(prisma, session.id);
-    return { paymentSessionId: session.id, clientSecret: session.clientSecret || null, publishableKey: keys.publishableKey, amount, currency, status: settled2.status, invoiceId: invoice.id };
-  }
-  let pi;
-  try {
-    pi = await createPaymentIntent(keys, {
-      amount,
-      currency,
-      customer,
-      description: `Invoice ${invoice.number ?? ""}`.trim(),
-      receiptEmail: invoice.family?.billingEmail,
-      metadata: { paymentSessionId: session.id, invoiceId: invoice.id, familyId: invoice.familyId },
-      offSession: input.offSession,
-      paymentMethod: input.offSession ? invoice.family?.defaultPaymentMethodId : null,
-      saveCard: input.saveCard
-    }, `ps:${session.id}`);
-  } catch (error) {
-    const e = error;
-    const status = e.unclear ? "unknown" : "failed";
-    await prisma.paymentSession.updateMany({ where: { id: session.id, status: "pending" }, data: { status, failureMessage: String(e.message).slice(0, 500) } });
-    await prisma.changeEvent.create({ data: { aggregateType: "PaymentSession", aggregateId: session.id, from: "pending", to: status, reason: e.code || "stripe_error" } });
-    if (e.unclear) throw new CommandError("The card processor did not answer. We will check the payment before trying again.");
-    throw new CommandError(e.declined ? `The card was declined: ${e.message}` : e.message);
-  }
-  await prisma.paymentSession.update({ where: { id: session.id }, data: { providerPaymentId: pi.id, clientSecret: pi.client_secret || "" } });
-  const settled = await settlePaymentIntent(prisma, pi, "create");
-  return { paymentSessionId: session.id, clientSecret: pi.client_secret, publishableKey: keys.publishableKey, amount, currency, status: settled.status, invoiceId: invoice.id };
-}
-function mapStatus(pi) {
-  switch (pi.status) {
-    case "succeeded":
-      return "captured";
-    case "requires_capture":
-      return "authorized";
-    case "requires_action":
-      return "requires_action";
-    case "canceled":
-      return "cancelled";
-    case "requires_payment_method":
-      return pi.last_payment_error ? "failed" : "pending";
-    default:
-      return "pending";
-  }
-}
-async function settlePaymentIntent(prisma, pi, source) {
-  return transaction(prisma, async (tx) => {
-    const byId = await tx.paymentSession.findFirst({ where: { providerPaymentId: pi.id } });
-    const session = byId ?? (pi.metadata?.paymentSessionId ? await tx.paymentSession.findUnique({ where: { id: pi.metadata.paymentSessionId } }) : null);
-    if (!session) return { status: "ignored", paymentId: null, parked: "no payment session for this PaymentIntent", invoiceStatus: null, paymentSessionId: null };
-    await lockKey(tx, `payment-session:${session.id}`);
-    const current = await tx.paymentSession.findUnique({ where: { id: session.id } });
-    const next = mapStatus(pi);
-    const problems = [];
-    if (pi.amount !== current.amount) problems.push(`amount ${pi.amount} != ${current.amount}`);
-    if ((pi.currency || "").toUpperCase() !== (current.currencyCode || "").toUpperCase()) problems.push(`currency ${pi.currency} != ${current.currencyCode}`);
-    if (pi.metadata?.invoiceId && pi.metadata.invoiceId !== current.invoiceId) problems.push("invoice does not match");
-    if (current.providerPaymentId && current.providerPaymentId !== pi.id) problems.push("payment intent does not match");
-    if (problems.length) {
-      const reason = problems.join("; ");
-      if (current.reviewReason !== reason || current.status !== "unknown") {
-        await tx.paymentSession.update({ where: { id: current.id }, data: { status: current.status === "captured" ? current.status : "unknown", reviewReason: reason } });
-        await recordChange(tx, { type: "PaymentSession", id: current.id, from: current.status, to: "unknown", reason: `parked: ${reason}`, data: { source, paymentIntent: pi.id } });
-      }
-      return { status: "parked", paymentId: null, parked: reason, invoiceStatus: null, paymentSessionId: current.id };
-    }
-    if (next !== "captured") {
-      if (current.status !== next && !["captured", "refunded", "partially_refunded"].includes(current.status)) {
-        await tx.paymentSession.updateMany({ where: { id: current.id, status: current.status }, data: { status: next, ...next === "failed" ? { failureMessage: pi.last_payment_error?.message?.slice(0, 500) || "Payment failed" } : {}, ...next === "cancelled" ? { cancelledAt: /* @__PURE__ */ new Date() } : {} } });
-        await recordChange(tx, { type: "PaymentSession", id: current.id, from: current.status, to: next, reason: source });
-      }
-      return { status: next, paymentId: null, parked: null, invoiceStatus: null, paymentSessionId: current.id };
-    }
-    const existing = await tx.payment.findFirst({ where: { OR: [{ paymentSessionId: current.id }, { providerPaymentId: pi.id }] }, select: { id: true } });
-    if (existing) {
-      const inv = current.invoiceId ? await tx.invoice.findUnique({ where: { id: current.invoiceId }, select: { status: true } }) : null;
-      return { status: "captured", paymentId: existing.id, parked: null, invoiceStatus: inv?.status ?? null, paymentSessionId: current.id };
-    }
-    await tx.paymentSession.updateMany({ where: { id: current.id }, data: { status: "captured", capturedAt: /* @__PURE__ */ new Date(), reviewReason: "" } });
-    await recordChange(tx, { type: "PaymentSession", id: current.id, from: current.status, to: "captured", reason: source });
-    const payment = await tx.payment.create({
-      data: {
-        ...current.invoiceId ? { invoice: { connect: { id: current.invoiceId } } } : {},
-        ...current.familyId ? { family: { connect: { id: current.familyId } } } : {},
-        amount: pi.amount,
-        currency: current.currencyCode,
-        method: "card",
-        reference: pi.id,
-        status: "captured",
-        paymentSession: { connect: { id: current.id } },
-        providerPaymentId: pi.id
-      }
-    });
-    await recordChange(tx, { type: "Payment", id: payment.id, to: "captured", reason: source });
-    let invoiceStatus = null;
-    if (current.invoiceId) {
-      try {
-        invoiceStatus = (await applyPayment(tx, current.invoiceId, pi.amount)).to;
-      } catch (error) {
-        if (!(error instanceof CommandError)) throw error;
-        await tx.paymentSession.update({ where: { id: current.id }, data: { reviewReason: "Captured after the invoice was already settled; refund or credit the family." } });
-        invoiceStatus = "overpaid";
-      }
-    }
-    const metadata = current.metadata ?? {};
-    if (metadata.saveCard && pi.payment_method && current.familyId) await saveCardReference(tx, prisma, current.familyId, pi.payment_method);
-    return { status: "captured", paymentId: payment.id, parked: null, invoiceStatus, paymentSessionId: current.id };
-  });
-}
-async function saveCardReference(tx, prisma, familyId, paymentMethodId, label2) {
-  let display = label2 ?? "";
-  if (!display) {
-    try {
-      const keys = await stripeKeys(prisma);
-      const pm = await retrievePaymentMethod(keys, paymentMethodId);
-      display = pm.card ? `${pm.card.brand.toUpperCase()} \u2022\u2022\u2022\u2022 ${pm.card.last4} (${String(pm.card.exp_month).padStart(2, "0")}/${String(pm.card.exp_year).slice(-2)})` : "Saved card";
-    } catch {
-      display = "Saved card";
-    }
-  }
-  await tx.family.update({ where: { id: familyId }, data: { defaultPaymentMethodId: paymentMethodId, defaultPaymentMethodLabel: display } });
-}
-async function refreshPaymentSession(prisma, paymentSessionId) {
-  const session = await prisma.paymentSession.findUnique({ where: { id: paymentSessionId } });
-  if (!session?.providerPaymentId) throw new CommandError("That payment was not found.");
-  const keys = await stripeKeys(prisma);
-  const pi = await retrievePaymentIntent(keys, session.providerPaymentId);
-  return settlePaymentIntent(prisma, pi, "confirm");
-}
-async function requestRefund(tx, input) {
-  const amount = Math.round(input.amount);
-  if (!Number.isSafeInteger(amount) || amount <= 0) throw new CommandError("Enter a refund amount.");
-  const existing = await tx.refund.findUnique({ where: { idempotencyKey: input.key } });
-  if (existing) return existing;
-  const rows = await tx.$executeRaw`
-    UPDATE "Payment" SET "refundedAmount" = COALESCE("refundedAmount", 0) + ${amount},
-      status = CASE WHEN COALESCE("refundedAmount", 0) + ${amount} = amount THEN 'refunded' ELSE 'partially_refunded' END,
-      "updatedAt" = now()
-    WHERE id = ${input.paymentId} AND status IN ('captured', 'partially_refunded') AND COALESCE("refundedAmount", 0) + ${amount} <= amount`;
-  if (rows !== 1) throw new CommandError("That is more than is left to refund on this payment.");
-  const payment = await tx.payment.findUnique({ where: { id: input.paymentId }, select: { method: true, status: true, invoiceId: true, amount: true, refundedAmount: true } });
-  const refund = await tx.refund.create({
-    data: {
-      payment: { connect: { id: input.paymentId } },
-      amount,
-      reason: input.reason.slice(0, 500),
-      idempotencyKey: input.key,
-      // Cash, cheque and transfer refunds are recorded as handed back; card goes to Stripe after commit.
-      status: payment.method === "card" ? "requested" : "succeeded",
-      ...input.actorId ? { requestedBy: { connect: { id: input.actorId } } } : {}
-    }
-  });
-  await recordChange(tx, { type: "Payment", id: input.paymentId, to: payment.status, actorId: input.actorId, reason: "refund", data: { refundId: refund.id, amount } });
-  return refund;
-}
-async function processRefund(prisma, refundId) {
-  const refund = await prisma.refund.findUnique({ where: { id: refundId }, include: { payment: { select: { providerPaymentId: true, method: true } } } });
-  if (!refund || refund.status !== "requested" || refund.payment?.method !== "card") return refund?.status ?? null;
-  const keys = await stripeKeys(prisma);
-  try {
-    const r = await createRefund(keys, { paymentIntent: refund.payment.providerPaymentId, amount: refund.amount, reason: refund.reason, metadata: { refundId: refund.id } }, `refund:${refund.id}`);
-    const status = r.status === "succeeded" || r.status === "pending" ? "succeeded" : "failed";
-    await prisma.refund.updateMany({ where: { id: refund.id, status: "requested" }, data: { status, providerRefundId: r.id, failureReason: status === "failed" ? r.status : "" } });
-    if (status === "failed") await releaseRefundReservation(prisma, refund.id);
-    return status;
-  } catch (error) {
-    const e = error;
-    if (e.unclear) {
-      await prisma.refund.updateMany({ where: { id: refund.id, status: "requested" }, data: { status: "unknown", failureReason: e.message.slice(0, 500) } });
-      return "unknown";
-    }
-    await prisma.refund.updateMany({ where: { id: refund.id, status: "requested" }, data: { status: "failed", failureReason: e.message.slice(0, 500) } });
-    await releaseRefundReservation(prisma, refund.id);
-    return "failed";
-  }
-}
-async function releaseRefundReservation(prisma, refundId) {
-  await transaction(prisma, async (tx) => {
-    const refund = await tx.refund.findUnique({ where: { id: refundId }, select: { paymentId: true, amount: true } });
-    await tx.$executeRaw`
-      UPDATE "Payment" SET "refundedAmount" = GREATEST(0, COALESCE("refundedAmount", 0) - ${refund.amount}),
-        status = CASE WHEN COALESCE("refundedAmount", 0) - ${refund.amount} <= 0 THEN 'captured' ELSE 'partially_refunded' END, "updatedAt" = now()
-      WHERE id = ${refund.paymentId}`;
-    await recordChange(tx, { type: "Refund", id: refundId, from: "requested", to: "failed", reason: "provider refused" });
-  });
-}
-async function voidInvoiceIfUnpaid(tx, invoiceId, reason, actorId) {
-  const r = await tx.invoice.updateMany({ where: { id: invoiceId, status: { in: ["open", "draft"] }, amountPaid: 0 }, data: { status: "void", notes: reason.slice(0, 500) } });
-  if (r.count) {
-    await recordChange(tx, { type: "Invoice", id: invoiceId, from: "open", to: "void", actorId, reason });
-    await tx.paymentSession.updateMany({ where: { invoiceId, status: { in: ["pending", "requires_action"] } }, data: { status: "cancelled", cancelledAt: /* @__PURE__ */ new Date() } });
-  }
-  return r.count === 1;
-}
+// features/keystone/mutations/assessments.ts
+init_invoices();
+init_settings();
 
 // features/keystone/lib/fees.ts
+init_payments();
 async function settleAssessmentFee(tx, actor, a, decision) {
   if (!a.invoiceId || !a.fee) return { action: "none", refundIds: [] };
   const invoice = await tx.invoice.findUnique({ where: { id: a.invoiceId }, select: { id: true, status: true, amountPaid: true, payments: { where: { status: { in: ["captured", "partially_refunded"] } }, select: { id: true, amount: true, refundedAmount: true } } } });
@@ -3795,9 +3884,13 @@ async function settleAssessmentFee(tx, actor, a, decision) {
   return { action: "refunded", refundIds };
 }
 
+// features/keystone/mutations/assessments.ts
+init_payments();
+
 // features/keystone/lib/accounts.ts
 var import_node_crypto5 = require("node:crypto");
 init_errors();
+init_command();
 init_actor();
 var EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 async function guardianForCommand(tx, actor, input, locationId, reason) {
@@ -4176,12 +4269,17 @@ __export(billing_exports, {
   resolvers: () => resolvers3,
   typeDefs: () => typeDefs3
 });
+init_command();
 init_errors();
 init_actor();
 
 // features/keystone/lib/enrolment.ts
 var import_date_fns = require("date-fns");
 init_errors();
+init_command();
+init_invoices();
+init_payments();
+init_settings();
 var OPEN_ENROLMENT = ["pending_payment", "pending_match", "matched", "active", "paused"];
 var FIXED_SEAT_WEEKS = 4;
 async function buildCheckout(tx, input) {
@@ -4347,7 +4445,7 @@ registerFulfilment("enrolment", async (tx, invoice, f) => {
   if (!e) return;
   const now = /* @__PURE__ */ new Date();
   if (e.status !== "pending_payment") {
-    await tx.task.create({ data: { kind: "billing", title: `Payment received for a cancelled checkout (invoice ${invoice.number})`, family: { connect: { id: invoice.familyId } }, relatedType: "Invoice", relatedId: invoice.id, dueAt: now, openKey: `late-pay:${invoice.id}` } }).catch(() => {
+    await tx.task.create({ data: { kind: "billing_review", title: `Payment received for a cancelled checkout (invoice ${invoice.number})`, family: { connect: { id: invoice.familyId } }, relatedType: "Invoice", relatedId: invoice.id, dueAt: now, openKey: `late-pay:${invoice.id}` } }).catch(() => {
     });
     return;
   }
@@ -4364,29 +4462,7 @@ registerFulfilment("enrolment", async (tx, invoice, f) => {
     }
   }
   if (f.studentPackageId) await activatePackage(tx, f.studentPackageId, e.programId);
-  const seriesIds = Array.isArray(e.preferredTimes?.seriesIds) ? e.preferredTimes.seriesIds : [];
-  const booked = [];
-  const missed = [];
-  if (seriesIds.length && next === "active") {
-    const through = new Date(now.getTime() + FIXED_SEAT_WEEKS * 7 * DAY);
-    for (const seriesId of seriesIds) {
-      await generateSessions(tx, seriesId, through);
-      const sessions = await tx.session.findMany({ where: { seriesId, status: "scheduled", startsAt: { gt: now, lte: through } }, select: { id: true }, orderBy: { startsAt: "asc" } });
-      for (const s of sessions) {
-        try {
-          const r = await bookSeat(tx, null, { sessionId: s.id, studentId: e.studentId, source: "fixed_seat", whenFull: "reject" });
-          if (r.kind === "booked") {
-            booked.push(r.bookingId);
-            await tx.booking.update({ where: { id: r.bookingId }, data: { enrollment: { connect: { id: e.id } } } });
-          }
-        } catch (error) {
-          if (!(error instanceof CommandError)) throw error;
-          missed.push(`${s.id}: ${error.message}`);
-        }
-      }
-    }
-    if (missed.length) await tx.task.create({ data: { kind: "schedule", title: `${missed.length} fixed seat(s) could not be booked for a new enrolment`, family: { connect: { id: e.familyId } }, student: { connect: { id: e.studentId } }, relatedType: "Enrollment", relatedId: e.id, dueAt: now, openKey: `seats:${e.id}` } });
-  }
+  const seats = next === "active" ? await bookFixedSeats(tx, e.id, now, new Date(now.getTime() + FIXED_SEAT_WEEKS * 7 * DAY)) : { booked: 0, missed: 0 };
   const lead = await tx.lead.findFirst({ where: { familyId: e.familyId, status: { in: ["new", "contacted", "assessment_booked", "assessed", "proposal_sent"] } }, select: { id: true, status: true }, orderBy: { createdAt: "desc" } });
   if (lead) {
     await tx.lead.updateMany({ where: { id: lead.id, status: lead.status }, data: { status: "enrolled" } });
@@ -4394,8 +4470,35 @@ registerFulfilment("enrolment", async (tx, invoice, f) => {
   }
   if (e.planId) await tx.learningPlan.updateMany({ where: { id: e.planId, status: { in: ["proposed", "accepted"] } }, data: { status: "active" } });
   await tx.notificationLog.create({ data: { recipient: "", template: "enrolment_confirmed", subject: `Enrolment confirmed: ${e.program?.name ?? ""}`, relatedType: "Enrollment", relatedId: e.id, status: "queued" } });
-  await tx.invoice.update({ where: { id: invoice.id }, data: { fulfilment: { ...f, bookedSeats: booked.length, missedSeats: missed.length } } });
+  await tx.invoice.update({ where: { id: invoice.id }, data: { fulfilment: { ...f, bookedSeats: seats.booked, missedSeats: seats.missed } } });
 });
+async function bookFixedSeats(tx, enrollmentId, from, through) {
+  const e = await tx.enrollment.findUnique({ where: { id: enrollmentId }, select: { id: true, studentId: true, familyId: true, status: true, preferredTimes: true } });
+  const seriesIds = Array.isArray(e?.preferredTimes?.seriesIds) ? e.preferredTimes.seriesIds : [];
+  if (!e || !seriesIds.length || e.status !== "active") return { booked: 0, missed: 0 };
+  let booked = 0;
+  const missed = [];
+  for (const seriesId of seriesIds) {
+    await generateSessions(tx, seriesId, through);
+    const sessions = await tx.session.findMany({ where: { seriesId, status: "scheduled", startsAt: { gt: new Date(Math.max(from.getTime(), Date.now())), lte: through }, bookings: { none: { studentId: e.studentId, status: { in: ["booked", "attended", "late", "no_show"] } } } }, select: { id: true }, orderBy: { startsAt: "asc" } });
+    for (const s of sessions) {
+      try {
+        const r = await bookSeat(tx, null, { sessionId: s.id, studentId: e.studentId, source: "fixed_seat", whenFull: "reject" });
+        if (r.kind === "booked") {
+          booked += 1;
+          await tx.booking.update({ where: { id: r.bookingId }, data: { enrollment: { connect: { id: e.id } } } });
+        }
+      } catch (error) {
+        if (!(error instanceof CommandError)) throw error;
+        missed.push(`${s.id}: ${error.message}`);
+      }
+    }
+  }
+  if (missed.length) {
+    await tx.task.upsert({ where: { openKey: `seats:${e.id}` }, create: { kind: "schedule_problem", title: `${missed.length} fixed seat(s) could not be booked`, family: { connect: { id: e.familyId } }, student: { connect: { id: e.studentId } }, relatedType: "Enrollment", relatedId: e.id, dueAt: /* @__PURE__ */ new Date(), openKey: `seats:${e.id}`, outcomeNote: missed.join("; ").slice(0, 1e3) }, update: { title: `${missed.length} fixed seat(s) could not be booked`, outcomeNote: missed.join("; ").slice(0, 1e3) } });
+  }
+  return { booked, missed: missed.length };
+}
 async function activatePackage(tx, studentPackageId, programId) {
   const sp = await tx.studentPackage.findUnique({ where: { id: studentPackageId }, include: { package: { select: { expiryMonths: true, programId: true, name: true } } } });
   const now = /* @__PURE__ */ new Date();
@@ -4426,8 +4529,15 @@ async function removePackageCredit(tx, invoiceId, actorId) {
   return minutes;
 }
 
+// features/keystone/mutations/billing.ts
+init_invoices();
+init_payments();
+
 // features/keystone/lib/webhook.ts
 var import_node_crypto6 = require("node:crypto");
+init_stripe();
+init_payments();
+init_command();
 async function settleSetupIntent(prisma, si) {
   if (si.status !== "succeeded" || !si.payment_method) return si.status;
   const session = await prisma.paymentSession.findFirst({ where: { providerPaymentId: si.id, purpose: "setup" } });
@@ -4728,16 +4838,726 @@ var resolvers3 = {
   }
 };
 
+// features/keystone/mutations/memberships.ts
+var memberships_exports = {};
+__export(memberships_exports, {
+  resolvers: () => resolvers4,
+  typeDefs: () => typeDefs4
+});
+var import_node_crypto9 = require("node:crypto");
+init_command();
+init_errors();
+init_actor();
+
+// features/keystone/lib/membership.ts
+var import_date_fns2 = require("date-fns");
+var import_node_crypto7 = require("node:crypto");
+init_errors();
+init_command();
+init_invoices();
+init_payments();
+init_settings();
+
+// features/keystone/lib/notify.ts
+var import_nodemailer = require("nodemailer");
+async function queueEmail(tx, input) {
+  if (!input.to) return null;
+  return tx.notificationLog.create({ data: { recipient: input.to, template: input.template, subject: input.subject.slice(0, 200), relatedType: input.relatedType, relatedId: input.relatedId, channel: "email", status: "queued" } });
+}
+var BODIES = {
+  default: (subject, link) => `${subject}.
+
+See the details in your account: ${link}`
+};
+async function deliverQueued(prisma, limit = 50) {
+  const host = process.env.SMTP_HOST;
+  const rows = await prisma.notificationLog.findMany({ where: { status: "queued", channel: "email" }, orderBy: { createdAt: "asc" }, take: limit });
+  if (!rows.length) return { sent: 0, failed: 0, waiting: 0 };
+  if (!host) {
+    await prisma.notificationLog.updateMany({ where: { id: { in: rows.map((r) => r.id) } }, data: { status: "failed", error: "Email is not set up (SMTP settings missing)." } });
+    return { sent: 0, failed: rows.length, waiting: 0 };
+  }
+  const transport2 = (0, import_nodemailer.createTransport)({ host, port: Number(process.env.SMTP_PORT || 587), auth: process.env.SMTP_USER ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASSWORD } : void 0 });
+  const from = process.env.SMTP_FROM || process.env.SMTP_USER || "no-reply@localhost";
+  const link = `${process.env.SMTP_STORE_LINK || ""}/account`;
+  let sent = 0;
+  let failed = 0;
+  for (const r of rows) {
+    if (!r.recipient) continue;
+    try {
+      await transport2.sendMail({ from, to: r.recipient, subject: r.subject, text: (BODIES[r.template] ?? BODIES.default)(r.subject, link) });
+      await prisma.notificationLog.update({ where: { id: r.id }, data: { status: "sent", sentAt: /* @__PURE__ */ new Date(), error: "" } });
+      sent += 1;
+    } catch (error) {
+      await prisma.notificationLog.update({ where: { id: r.id }, data: { status: "failed", error: String(error?.message).slice(0, 500) } });
+      failed += 1;
+    }
+  }
+  return { sent, failed, waiting: 0 };
+}
+
+// features/keystone/lib/membership.ts
+var LEASE_MS = 10 * 6e4;
+async function billMembership(prisma, membershipId, now = /* @__PURE__ */ new Date()) {
+  let claim;
+  try {
+    claim = await transaction(prisma, async (tx) => {
+      await lockKey(tx, `membership-billing:${membershipId}`);
+      const m = await tx.membership.findUnique({ where: { id: membershipId }, include: { plan: true, pendingPlan: true, student: { select: { firstName: true } }, family: { select: { defaultPaymentMethodId: true, billingEmail: true } }, enrollment: { select: { locationId: true, programId: true } } } });
+      if (!m || !["active", "past_due", "cancelling"].includes(m.status) || !m.currentPeriodEnd) return { skip: "not billable" };
+      const periodStart = m.currentPeriodEnd;
+      const periodEnd = (0, import_date_fns2.addMonths)(periodStart, 1);
+      if (periodStart.getTime() - DAY > now.getTime()) return { skip: "not due" };
+      if (m.endsAt && m.endsAt <= periodStart) return { skip: "membership ends" };
+      const last = await tx.billingAttempt.findFirst({ where: { membershipId, periodStart }, orderBy: { attemptNumber: "desc" } });
+      if (last?.status === "succeeded") return { skip: "paid" };
+      if (last?.status === "unknown") return { skip: "waiting for reconcile" };
+      if (last?.status === "pending") {
+        if (last.leaseExpiresAt && last.leaseExpiresAt > now) return { skip: "in progress" };
+        await tx.billingAttempt.update({ where: { id: last.id }, data: { status: "unknown", failureMessage: "Lease expired before the provider answered" } });
+        await recordChange(tx, { type: "BillingAttempt", id: last.id, from: "pending", to: "unknown", reason: "lease expired" });
+        return { skip: "waiting for reconcile" };
+      }
+      if (last?.status === "failed" && (!last.nextRetryAt || last.nextRetryAt > now)) return { skip: last.nextRetryAt ? "waiting for retry day" : "retries used" };
+      let invoiceId2 = last?.invoiceId ?? null;
+      if (invoiceId2) {
+        const inv2 = await tx.invoice.findUnique({ where: { id: invoiceId2 }, select: { status: true } });
+        if (inv2.status === "paid") return { skip: "paid" };
+        if (inv2.status === "void") invoiceId2 = null;
+      }
+      if (!invoiceId2) {
+        const plan = m.pendingPlan ?? m.plan;
+        const price = m.pendingPlan ? m.pendingPlan.price : m.price;
+        const lines = [{ description: `${plan?.name ?? "Membership"}: ${periodStart.toISOString().slice(0, 10)} to ${periodEnd.toISOString().slice(0, 10)} (${m.student?.firstName ?? ""})`, kind: "membership", unitAmount: price, studentId: m.studentId, programId: m.enrollment?.programId ?? null, membershipId: m.id }];
+        if (m.discountPercent) lines.push({ description: `Sibling discount ${m.discountPercent}%`, kind: "discount", unitAmount: -Math.round(price * m.discountPercent / 100), studentId: m.studentId, membershipId: m.id });
+        const inv2 = await createInvoice(tx, { familyId: m.familyId, locationId: m.enrollment?.locationId ?? null, kind: "membership", lines, dueAt: periodStart, fulfilment: { kind: "membership_period", membershipId: m.id, periodStart: periodStart.toISOString(), periodEnd: periodEnd.toISOString() } });
+        invoiceId2 = inv2.id;
+        if (inv2.total === 0) {
+          await tx.invoice.update({ where: { id: inv2.id }, data: { status: "paid" } });
+          const { fulfilInvoice: fulfilInvoice2 } = await Promise.resolve().then(() => (init_payments(), payments_exports));
+          await fulfilInvoice2(tx, inv2.id);
+          return { skip: "nothing to charge" };
+        }
+      }
+      const n = (last?.attemptNumber ?? 0) + 1;
+      const inv = await tx.invoice.findUnique({ where: { id: invoiceId2 }, select: { total: true, amountPaid: true, amountCredited: true } });
+      const attempt2 = await tx.billingAttempt.create({
+        data: {
+          membership: { connect: { id: m.id } },
+          periodStart,
+          periodEnd,
+          invoice: { connect: { id: invoiceId2 } },
+          attemptNumber: n,
+          status: "pending",
+          amount: inv.total - inv.amountPaid - inv.amountCredited,
+          requestHash: (0, import_node_crypto7.createHash)("sha256").update(`${m.id}:${periodStart.toISOString()}:${n}`).digest("hex"),
+          leaseExpiresAt: new Date(now.getTime() + LEASE_MS)
+        }
+      });
+      await recordChange(tx, { type: "BillingAttempt", id: attempt2.id, to: "pending", data: { membershipId: m.id, attemptNumber: n } });
+      return { attempt: attempt2, invoiceId: invoiceId2, hasCard: Boolean(m.family?.defaultPaymentMethodId), email: m.family?.billingEmail ?? "" };
+    });
+  } catch (error) {
+    if (error?.code === "P2002") return { membershipId, outcome: "skipped", reason: "another run claimed this period" };
+    throw error;
+  }
+  if (claim.skip) return { membershipId, outcome: "skipped", reason: claim.skip };
+  const { attempt, invoiceId } = claim;
+  if (!claim.hasCard) {
+    await finishAttempt(prisma, attempt.id, "failed", { code: "no_card", message: "No saved card on file" }, now);
+    return { membershipId, outcome: "no_card", attemptId: attempt.id, invoiceId };
+  }
+  let status = "unknown";
+  let message = "";
+  try {
+    const started = await startInvoicePayment(prisma, { invoiceId, actorId: null, offSession: true, attemptKey: attempt.id });
+    status = started.status;
+  } catch (error) {
+    message = error.message;
+    const ps2 = await prisma.paymentSession.findFirst({ where: { invoiceId, offSession: true }, orderBy: { createdAt: "desc" }, select: { status: true, failureMessage: true } });
+    status = ps2?.status === "failed" ? "failed" : "unknown";
+    if (ps2?.failureMessage) message = ps2.failureMessage;
+  }
+  const ps = await prisma.paymentSession.findFirst({ where: { invoiceId, offSession: true }, orderBy: { createdAt: "desc" }, select: { providerPaymentId: true } });
+  if (status === "captured") {
+    await finishAttempt(prisma, attempt.id, "succeeded", { providerPaymentId: ps?.providerPaymentId }, now);
+    return { membershipId, outcome: "captured", attemptId: attempt.id, invoiceId };
+  }
+  if (status === "unknown") {
+    await finishAttempt(prisma, attempt.id, "unknown", { message, providerPaymentId: ps?.providerPaymentId }, now);
+    return { membershipId, outcome: "unknown", attemptId: attempt.id, invoiceId };
+  }
+  await finishAttempt(prisma, attempt.id, "failed", { code: status === "requires_action" ? "authentication_required" : "declined", message: message || status, providerPaymentId: ps?.providerPaymentId }, now);
+  return { membershipId, outcome: "failed", attemptId: attempt.id, invoiceId };
+}
+async function finishAttempt(prisma, attemptId, status, detail, now) {
+  await transaction(prisma, async (tx) => {
+    const a = await tx.billingAttempt.findUnique({ where: { id: attemptId }, include: { membership: { select: { id: true, status: true, pastDueSince: true, familyId: true, family: { select: { billingEmail: true } } } } } });
+    if (!a || !["pending", "unknown"].includes(a.status)) return;
+    let nextRetryAt = null;
+    if (status === "failed") {
+      const settings = await getSettings(tx);
+      const since = a.membership.pastDueSince ?? now;
+      const days = settings.pastDueRetryDays[a.attemptNumber - 1];
+      nextRetryAt = days != null ? new Date(since.getTime() + days * DAY) : null;
+      if (["active", "cancelling"].includes(a.membership.status)) {
+        await tx.membership.updateMany({ where: { id: a.membership.id, status: a.membership.status }, data: { status: "past_due", pastDueSince: since } });
+        await recordChange(tx, { type: "Membership", id: a.membership.id, from: a.membership.status, to: "past_due", reason: detail.code ?? "payment failed", data: { attemptId } });
+      }
+      if (a.invoiceId) await queueEmail(tx, { to: a.membership.family?.billingEmail ?? "", template: "payment_failed", subject: "Your tutoring payment did not go through", relatedType: "Invoice", relatedId: a.invoiceId });
+    }
+    if (status === "unknown") {
+      await tx.task.upsert({ where: { openKey: `reconcile:${attemptId}` }, create: { kind: "billing_review", title: "A membership charge needs checking with Stripe", family: { connect: { id: a.membership.familyId } }, relatedType: "BillingAttempt", relatedId: attemptId, dueAt: now, openKey: `reconcile:${attemptId}` }, update: {} });
+    }
+    await tx.billingAttempt.update({ where: { id: attemptId }, data: { status, leaseExpiresAt: null, nextRetryAt, failureCode: detail.code ?? "", failureMessage: (detail.message ?? "").slice(0, 500), providerPaymentId: detail.providerPaymentId ?? a.providerPaymentId ?? "" } });
+    await recordChange(tx, { type: "BillingAttempt", id: attemptId, from: a.status, to: status, reason: detail.code ?? null });
+  });
+}
+async function reconcileAttempt(prisma, attemptId, now = /* @__PURE__ */ new Date()) {
+  const a = await prisma.billingAttempt.findUnique({ where: { id: attemptId } });
+  if (!a) throw new CommandError("That billing attempt was not found.");
+  if (!["unknown", "pending"].includes(a.status)) return { status: a.status };
+  if (a.status === "pending" && a.leaseExpiresAt && a.leaseExpiresAt > now) throw new CommandError("This charge is still in progress.");
+  const keys = await stripeKeys(prisma);
+  const ps = await prisma.paymentSession.findFirst({ where: { invoiceId: a.invoiceId, offSession: true, createdAt: { gte: new Date(a.createdAt.getTime() - 6e4) } }, orderBy: { createdAt: "asc" } });
+  let pi = null;
+  if (ps?.providerPaymentId) pi = await stripe_exports.retrievePaymentIntent(keys, ps.providerPaymentId);
+  else if (ps) {
+    const found = await stripe_exports.listPaymentIntentsByMetadata(keys, "paymentSessionId", ps.id);
+    pi = found.data[0] ?? null;
+    if (pi) await prisma.paymentSession.update({ where: { id: ps.id }, data: { providerPaymentId: pi.id } });
+  }
+  if (!pi) {
+    await transaction(prisma, async (tx) => {
+      await tx.billingAttempt.update({ where: { id: a.id }, data: { status: "failed", failureCode: "not_sent", failureMessage: "Stripe has no record of this charge", nextRetryAt: now, leaseExpiresAt: null } });
+      if (ps) await tx.paymentSession.updateMany({ where: { id: ps.id, status: { in: ["pending", "unknown"] } }, data: { status: "failed", failureMessage: "Not sent" } });
+      await recordChange(tx, { type: "BillingAttempt", id: a.id, from: a.status, to: "failed", reason: "reconcile: not sent" });
+      await tx.task.updateMany({ where: { openKey: `reconcile:${a.id}` }, data: { status: "done", openKey: null, completedAt: now, outcomeNote: "Stripe had no charge; retry allowed" } });
+    });
+    return { status: "failed" };
+  }
+  const settled = await settlePaymentIntent(prisma, pi, "reconcile");
+  const final = settled.status === "captured" ? "succeeded" : ["failed", "cancelled", "requires_action"].includes(settled.status) ? "failed" : "unknown";
+  if (final === "unknown") return { status: "unknown" };
+  await prisma.billingAttempt.update({ where: { id: a.id }, data: { status: "unknown" } }).catch(() => {
+  });
+  await finishAttempt(prisma, a.id, final, { code: final === "failed" ? "declined" : void 0, providerPaymentId: pi.id, message: pi.last_payment_error?.message }, now);
+  await prisma.task.updateMany({ where: { openKey: `reconcile:${a.id}` }, data: { status: "done", openKey: null, completedAt: now, outcomeNote: `Stripe: ${pi.status}` } });
+  return { status: final };
+}
+registerFulfilment("membership_period", async (tx, invoice, f) => {
+  await lockKey(tx, `membership:${f.membershipId}`);
+  const m = await tx.membership.findUnique({ where: { id: f.membershipId }, include: { pendingPlan: true } });
+  if (!m) return;
+  const periodStart = new Date(f.periodStart);
+  const periodEnd = new Date(f.periodEnd);
+  if (!m.currentPeriodEnd || m.currentPeriodEnd.getTime() !== periodStart.getTime() || m.status === "cancelled") {
+    await tx.task.create({ data: { kind: "billing_review", title: `Membership payment received for a period that no longer applies (invoice ${invoice.number})`, family: { connect: { id: invoice.familyId } }, relatedType: "Invoice", relatedId: invoice.id, dueAt: /* @__PURE__ */ new Date(), openKey: `stale-period:${invoice.id}` } }).catch(() => {
+    });
+    return;
+  }
+  const next = ["past_due", "suspended"].includes(m.status) ? "active" : m.status;
+  const planData = m.pendingPlan ? { plan: { connect: { id: m.pendingPlan.id } }, pendingPlan: { disconnect: true }, price: m.pendingPlan.price, sessionsPerPeriod: m.pendingPlan.sessionsPerPeriod ?? null, weeklyCap: m.pendingPlan.sessionsPerPeriod ? null : m.pendingPlan.weeklyCapForUnlimited ?? 5 } : {};
+  await tx.membership.update({ where: { id: m.id }, data: { status: next, currentPeriodStart: periodStart, currentPeriodEnd: periodEnd, pastDueSince: null, ...planData } });
+  await recordChange(tx, { type: "Membership", id: m.id, from: m.status, to: next, reason: "period paid", data: { periodStart: f.periodStart, invoiceId: invoice.id, planChanged: Boolean(m.pendingPlan) } });
+  await startMembershipPeriod(tx, m.id, periodStart, null);
+  const e = await tx.enrollment.findFirst({ where: { membershipId: m.id, status: "active" }, select: { id: true } });
+  if (e) await bookFixedSeats(tx, e.id, periodStart, periodEnd);
+  await tx.billingAttempt.updateMany({ where: { invoiceId: invoice.id, status: { in: ["pending", "unknown"] } }, data: { status: "succeeded", leaseExpiresAt: null } });
+  await tx.billingAttempt.updateMany({ where: { invoiceId: invoice.id, status: "failed" }, data: { nextRetryAt: null } });
+});
+async function cancelFutureBookings(tx, where, reason, actorId) {
+  const bookings = await tx.booking.findMany({ where: { status: "booked", startsAt: { gt: /* @__PURE__ */ new Date() }, ...where }, select: { id: true }, orderBy: { startsAt: "asc" } });
+  for (const b of bookings) await cancelSeat(tx, null, b.id, { byCentre: true, reason });
+  return bookings.length;
+}
+function membershipBookings(m) {
+  return { studentId: m.studentId, creditGrant: { membershipId: m.id } };
+}
+async function endEnrolment(tx, membershipId, reason, actorId) {
+  const e = await tx.enrollment.findFirst({ where: { membershipId, status: { in: ["pending_match", "matched", "active", "paused"] } }, select: { id: true, status: true } });
+  if (!e) return;
+  await tx.enrollment.update({ where: { id: e.id }, data: { status: "ended", endDate: /* @__PURE__ */ new Date(), endReason: reason.slice(0, 300) } });
+  await recordChange(tx, { type: "Enrollment", id: e.id, from: e.status, to: "ended", actorId, reason });
+}
+async function closeMembership(tx, m, reason, actorId, now) {
+  const r = await tx.membership.updateMany({ where: { id: m.id, status: m.status }, data: { status: "cancelled", endsAt: m.endsAt && m.endsAt < now ? m.endsAt : now } });
+  if (!r.count) return false;
+  await recordChange(tx, { type: "Membership", id: m.id, from: m.status, to: "cancelled", actorId, reason });
+  await cancelFutureBookings(tx, membershipBookings(m), reason, actorId);
+  const grants = await tx.creditGrant.findMany({ where: { membershipId: m.id, status: { in: ["active", "exhausted"] } }, select: { id: true } });
+  for (const g of grants) await removeUnused(tx, g.id, "adjustment", "voided", actorId, "Membership ended");
+  await endEnrolment(tx, m.id, reason, actorId);
+  return true;
+}
+async function advanceMemberships(prisma, now = /* @__PURE__ */ new Date()) {
+  const settings = await getSettings(prisma);
+  const out = { suspended: 0, cancelled: 0, ended: 0, paused: 0, resumed: 0 };
+  const suspendBefore = new Date(now.getTime() - settings.suspendAfterDays * DAY);
+  for (const m of await prisma.membership.findMany({ where: { status: "past_due", pastDueSince: { lte: suspendBefore } }, select: { id: true } })) {
+    await transaction(prisma, async (tx) => {
+      const row = await tx.membership.findUnique({ where: { id: m.id }, include: { family: { select: { billingEmail: true } } } });
+      if (row.status !== "past_due") return;
+      await tx.membership.update({ where: { id: m.id }, data: { status: "suspended" } });
+      await recordChange(tx, { type: "Membership", id: m.id, from: "past_due", to: "suspended", reason: `unpaid ${settings.suspendAfterDays} days` });
+      await cancelFutureBookings(tx, membershipBookings(row), "Membership suspended for non-payment", null);
+      await tx.task.upsert({ where: { openKey: `suspended:${m.id}` }, create: { kind: "failed_payment", title: "Membership suspended for non-payment", family: { connect: { id: row.familyId } }, student: { connect: { id: row.studentId } }, relatedType: "Membership", relatedId: m.id, dueAt: now, openKey: `suspended:${m.id}` }, update: {} });
+      await queueEmail(tx, { to: row.family?.billingEmail ?? "", template: "membership_suspended", subject: "Your tutoring membership is suspended", relatedType: "Membership", relatedId: m.id });
+      out.suspended += 1;
+    });
+  }
+  const cancelBefore = new Date(now.getTime() - (settings.suspendAfterDays + 30) * DAY);
+  for (const m of await prisma.membership.findMany({ where: { status: "suspended", pastDueSince: { lte: cancelBefore } } })) {
+    if (await transaction(prisma, (tx) => closeMembership(tx, m, "Unpaid 30 days after suspension", null, now))) out.cancelled += 1;
+  }
+  for (const m of await prisma.membership.findMany({ where: { status: { in: ["cancelling", "active", "past_due"] }, endsAt: { lte: now } } })) {
+    if (await transaction(prisma, (tx) => closeMembership(tx, m, "Notice period ended", null, now))) out.ended += 1;
+  }
+  for (const m of await prisma.membership.findMany({ where: { status: { in: ["active", "cancelling"] }, pausedFrom: { lte: now }, pausedUntil: { gt: now } }, select: { id: true, status: true } })) {
+    await transaction(prisma, async (tx) => {
+      const r = await tx.membership.updateMany({ where: { id: m.id, status: m.status }, data: { status: "paused" } });
+      if (!r.count) return;
+      await recordChange(tx, { type: "Membership", id: m.id, from: m.status, to: "paused", reason: "pause started" });
+      await tx.enrollment.updateMany({ where: { membershipId: m.id, status: "active" }, data: { status: "paused" } });
+      out.paused += 1;
+    });
+  }
+  for (const m of await prisma.membership.findMany({ where: { status: "paused", pausedUntil: { lte: now } }, select: { id: true, endsAt: true } })) {
+    await transaction(prisma, async (tx) => {
+      const to = m.endsAt ? "cancelling" : "active";
+      const r = await tx.membership.updateMany({ where: { id: m.id, status: "paused" }, data: { status: to, pausedFrom: null, pausedUntil: null } });
+      if (!r.count) return;
+      await recordChange(tx, { type: "Membership", id: m.id, from: "paused", to, reason: "pause ended" });
+      await tx.enrollment.updateMany({ where: { membershipId: m.id, status: "paused" }, data: { status: "active" } });
+      out.resumed += 1;
+    });
+  }
+  return out;
+}
+async function runMembershipBilling(prisma, now = /* @__PURE__ */ new Date(), onlyIds) {
+  const due = await prisma.membership.findMany({ where: { status: { in: ["active", "past_due", "cancelling"] }, currentPeriodEnd: { lte: new Date(now.getTime() + DAY) }, ...onlyIds ? { id: { in: onlyIds } } : {} }, select: { id: true } });
+  const results = [];
+  for (const m of due) results.push(await billMembership(prisma, m.id, now));
+  return results;
+}
+function noticeEndDate(m, noticeDays, now = /* @__PURE__ */ new Date()) {
+  const target = new Date(now.getTime() + noticeDays * DAY);
+  let end = m.currentPeriodEnd ?? (0, import_date_fns2.addMonths)(now, 1);
+  let guard = 0;
+  while (end < target && guard < 36) {
+    end = (0, import_date_fns2.addMonths)(end, 1);
+    guard += 1;
+  }
+  return end;
+}
+async function giveNotice(tx, m, actorId, now = /* @__PURE__ */ new Date()) {
+  if (!["active", "past_due", "paused"].includes(m.status)) throw new CommandError(m.status === "cancelling" ? "Notice has already been given." : "This membership cannot be cancelled now.");
+  const settings = await getSettings(tx);
+  const endsAt = noticeEndDate(m, settings.membershipCancelNoticeDays, now);
+  const to = m.status === "paused" ? "paused" : m.status === "past_due" ? "past_due" : "cancelling";
+  const r = await tx.membership.updateMany({ where: { id: m.id, status: m.status }, data: { status: to, endsAt, cancelRequestedAt: now, pendingPlanId: null } });
+  if (!r.count) throw new CommandError("This membership changed; reload and try again.");
+  await recordChange(tx, { type: "Membership", id: m.id, from: m.status, to, actorId, reason: "notice given", data: { endsAt: endsAt.toISOString() } });
+  const released = await cancelFutureBookings(tx, { ...membershipBookings(m), startsAt: { gte: endsAt } }, "After the membership end date", actorId);
+  return { endsAt, released };
+}
+async function applyPause(tx, m, from, until, actorId, opts) {
+  const now = opts.now ?? /* @__PURE__ */ new Date();
+  const settings = await getSettings(tx);
+  if (!["active", "cancelling"].includes(m.status)) throw new CommandError("Only an active membership can be paused.");
+  if (m.pausedUntil && m.pausedUntil > now) throw new CommandError("A pause is already booked.");
+  const days = Math.round((until.getTime() - from.getTime()) / DAY);
+  if (until <= from) throw new CommandError("The pause must end after it starts.");
+  if (!opts.staff) {
+    if (days < settings.pauseMinDays || days > settings.pauseMaxDays) throw new CommandError(`A pause is ${settings.pauseMinDays} to ${settings.pauseMaxDays} days.`);
+    if (from < new Date(now.getTime() - DAY)) throw new CommandError("A pause cannot start in the past.");
+    const yearAgo = new Date(now.getTime() - 365 * DAY);
+    if (m.lastPauseAt && m.lastPauseAt > yearAgo && settings.pausesPerYear <= 1) throw new CommandError("A membership can be paused once in 12 months.");
+  }
+  if (m.currentPeriodEnd && from >= m.currentPeriodEnd) throw new CommandError(`A pause must start before the next bill date (${m.currentPeriodEnd.toISOString().slice(0, 10)}).`);
+  const shift = until.getTime() - from.getTime();
+  const data = { pausedFrom: from, pausedUntil: until, lastPauseAt: now, pauseRequestedFrom: from, pauseRequestedUntil: until };
+  if (m.currentPeriodEnd) data.currentPeriodEnd = new Date(m.currentPeriodEnd.getTime() + shift);
+  if (m.endsAt) data.endsAt = new Date(m.endsAt.getTime() + shift);
+  const startsNow = from <= now;
+  if (startsNow) data.status = "paused";
+  const r = await tx.membership.updateMany({ where: { id: m.id, status: m.status }, data });
+  if (!r.count) throw new CommandError("This membership changed; reload and try again.");
+  await recordChange(tx, { type: "Membership", id: m.id, from: m.status, to: startsNow ? "paused" : m.status, actorId, reason: "pause booked", data: { from: from.toISOString(), until: until.toISOString() } });
+  const grants = await tx.creditGrant.findMany({ where: { membershipId: m.id, status: { in: ["active", "exhausted"] }, expiresAt: { gt: now } }, select: { id: true, expiresAt: true, periodEnd: true } });
+  for (const g of grants) await tx.creditGrant.update({ where: { id: g.id }, data: { expiresAt: new Date(g.expiresAt.getTime() + shift), ...g.periodEnd ? { periodEnd: new Date(g.periodEnd.getTime() + shift) } : {} } });
+  if (startsNow) await tx.enrollment.updateMany({ where: { membershipId: m.id, status: "active" }, data: { status: "paused" } });
+  const released = await cancelFutureBookings(tx, { ...membershipBookings(m), startsAt: { gte: from, lt: until } }, "Membership paused", actorId);
+  return { from, until, released, nextBillDate: data.currentPeriodEnd ?? null };
+}
+async function planChangePreview(tx, membershipId, planId, now = /* @__PURE__ */ new Date()) {
+  const m = await tx.membership.findUnique({ where: { id: membershipId }, include: { plan: true, enrollment: { select: { programId: true, program: { select: { sessionMinutes: true } } } } } });
+  if (!m) throw new CommandError("That membership was not found.");
+  const plan = await tx.membershipPlan.findUnique({ where: { id: planId } });
+  if (!plan || plan.status === "archived") throw new CommandError("That plan is not available.");
+  if (plan.programId && m.enrollment?.programId && plan.programId !== m.enrollment.programId) throw new CommandError("That plan is for a different programme.");
+  if (plan.id === m.planId) throw new CommandError("The membership is already on that plan.");
+  const start = m.currentPeriodStart ?? now;
+  const end = m.currentPeriodEnd ?? (0, import_date_fns2.addMonths)(now, 1);
+  const periodMs = Math.max(1, end.getTime() - start.getTime());
+  const leftMs = Math.max(0, end.getTime() - now.getTime());
+  const fraction = leftMs / periodMs;
+  const discount = (price) => price - Math.round(price * (m.discountPercent ?? 0) / 100);
+  const prorationAmount = Math.round((discount(plan.price) - discount(m.price ?? 0)) * fraction);
+  const minutesPerSession = m.enrollment?.program?.sessionMinutes ?? 60;
+  const extraMinutes = plan.sessionsPerPeriod && m.sessionsPerPeriod ? Math.round((plan.sessionsPerPeriod - m.sessionsPerPeriod) * minutesPerSession * fraction) : 0;
+  return {
+    membershipId: m.id,
+    fromPlan: { id: m.planId, name: m.plan?.name ?? "", price: m.price },
+    toPlan: { id: plan.id, name: plan.name, price: plan.price },
+    discountPercent: m.discountPercent ?? 0,
+    daysLeft: Math.round(leftMs / DAY),
+    periodDays: Math.round(periodMs / DAY),
+    prorationAmount,
+    extraMinutes,
+    nextBillDate: end.toISOString(),
+    nextBillAmount: discount(plan.price),
+    canApplyNow: prorationAmount >= 0 && m.status === "active"
+  };
+}
+async function changePlan(tx, membershipId, planId, effective, actorId) {
+  await lockKey(tx, `membership:${membershipId}`);
+  const preview = await planChangePreview(tx, membershipId, planId);
+  const m = await tx.membership.findUnique({ where: { id: membershipId }, include: { enrollment: { select: { locationId: true, programId: true } }, student: { select: { firstName: true } } } });
+  if (!["active", "past_due", "paused"].includes(m.status)) throw new CommandError("Only a live membership can change plan.");
+  if (effective === "next_period") {
+    await tx.membership.update({ where: { id: m.id }, data: { pendingPlan: { connect: { id: planId } } } });
+    await recordChange(tx, { type: "Membership", id: m.id, from: m.status, to: m.status, actorId, reason: "plan change at next period", data: { planId } });
+    return { ...preview, effective, invoiceId: null };
+  }
+  if (!preview.canApplyNow) throw new CommandError("A cheaper plan starts at the next bill date. Choose \u201Cnext period\u201D.");
+  const plan = await tx.membershipPlan.findUnique({ where: { id: planId } });
+  await tx.membership.update({ where: { id: m.id }, data: { plan: { connect: { id: plan.id } }, pendingPlan: { disconnect: true }, price: plan.price, sessionsPerPeriod: plan.sessionsPerPeriod ?? null, weeklyCap: plan.sessionsPerPeriod ? null : plan.weeklyCapForUnlimited ?? 5 } });
+  await recordChange(tx, { type: "Membership", id: m.id, from: m.status, to: m.status, actorId, reason: "plan changed now", data: { planId, prorationAmount: preview.prorationAmount } });
+  let invoiceId = null;
+  if (preview.prorationAmount > 0) {
+    const inv = await createInvoice(tx, { familyId: m.familyId, locationId: m.enrollment?.locationId ?? null, kind: "membership", actorId, lines: [{ description: `Plan change to ${plan.name}: ${preview.daysLeft} days (${m.student?.firstName ?? ""})`, kind: "membership", unitAmount: preview.prorationAmount, studentId: m.studentId, programId: m.enrollment?.programId ?? null, membershipId: m.id }] });
+    invoiceId = inv.id;
+  }
+  if (preview.extraMinutes > 0) {
+    const g = await tx.creditGrant.findFirst({ where: { membershipId: m.id, status: { in: ["active", "exhausted"] }, rolledFromId: null, periodStart: m.currentPeriodStart }, select: { id: true } });
+    if (g) await adjustGrant(tx, g.id, preview.extraMinutes, actorId, `Plan change to ${plan.name}`);
+  }
+  return { ...preview, effective, invoiceId };
+}
+async function endNow(tx, membershipId, opts) {
+  const now = opts.now ?? /* @__PURE__ */ new Date();
+  await lockKey(tx, `membership:${membershipId}`);
+  const m = await tx.membership.findUnique({ where: { id: membershipId } });
+  if (!m || m.status === "cancelled") throw new CommandError("This membership has already ended.");
+  let refundIds = [];
+  let refundAmount = 0;
+  if (opts.refund && m.currentPeriodStart && m.currentPeriodEnd && m.currentPeriodEnd > now) {
+    const lines = await tx.invoiceLine.findMany({ where: { membershipId: m.id, kind: { in: ["membership", "discount"] }, invoice: { status: { in: ["paid", "partially_paid"] }, createdAt: { lte: now } } }, select: { amount: true, invoiceId: true, invoice: { select: { createdAt: true } } }, orderBy: { createdAt: "desc" } });
+    const invoiceId = lines[0]?.invoiceId;
+    if (invoiceId) {
+      const paidForPeriod = lines.filter((l) => l.invoiceId === invoiceId).reduce((s, l) => s + l.amount, 0);
+      const fraction = (m.currentPeriodEnd.getTime() - now.getTime()) / (m.currentPeriodEnd.getTime() - m.currentPeriodStart.getTime());
+      refundAmount = Math.max(0, Math.round(paidForPeriod * fraction));
+      let left = refundAmount;
+      const payments = await tx.payment.findMany({ where: { invoiceId, status: { in: ["captured", "partially_refunded"] } }, orderBy: { createdAt: "asc" } });
+      for (const p of payments) {
+        if (left <= 0) break;
+        const amount = Math.min(left, p.amount - (p.refundedAmount ?? 0));
+        if (amount <= 0) continue;
+        const refund = await requestRefund(tx, { paymentId: p.id, amount, reason: `Membership ended: ${opts.reason}`.slice(0, 500), actorId: opts.actorId, key: `end-refund:${m.id}:${p.id}` });
+        refundIds.push(refund.id);
+        left -= amount;
+      }
+      refundAmount -= left;
+    }
+  }
+  await closeMembership(tx, m, opts.reason, opts.actorId, now);
+  return { refundAmount, refundIds };
+}
+
+// features/keystone/mutations/memberships.ts
+init_payments();
+
+// features/keystone/lib/jobs.ts
+var import_node_crypto8 = require("node:crypto");
+init_command();
+init_settings();
+async function expireCredits(prisma, now = /* @__PURE__ */ new Date()) {
+  const settings = await getSettings(prisma);
+  let rolled = 0;
+  let expired = 0;
+  const ended = await prisma.creditGrant.findMany({ where: { kind: "membership_period", status: { in: ["active", "exhausted"] }, periodEnd: { lte: now } }, select: { id: true, membershipId: true, periodEnd: true } });
+  for (const g of ended) {
+    await transaction(prisma, async (tx) => {
+      await lockKey(tx, `grant:${g.id}`);
+      const next = await tx.creditGrant.findFirst({ where: { membershipId: g.membershipId, kind: "membership_period", rolledFromId: null, periodStart: g.periodEnd }, select: { periodStart: true, periodEnd: true } });
+      if (next) {
+        const m = await rollOverGrant(tx, g.id, { periodStart: next.periodStart, periodEnd: next.periodEnd }, settings.membershipRolloverPeriods > 0);
+        if (m) rolled += 1;
+        else expired += 1;
+      } else {
+        await expireGrant(tx, g.id, "Period ended");
+        expired += 1;
+      }
+    });
+  }
+  const others = await prisma.creditGrant.findMany({ where: { kind: { not: "membership_period" }, status: "active", expiresAt: { lte: now } }, select: { id: true } });
+  for (const g of others) {
+    await transaction(prisma, (tx) => expireGrant(tx, g.id, "Expired"));
+    expired += 1;
+  }
+  return { rolled, expired };
+}
+async function openTask(tx, key, data) {
+  const existing = await tx.task.findUnique({ where: { openKey: key }, select: { id: true } });
+  if (existing) return false;
+  await tx.task.create({ data: { ...data, openKey: key, status: "open" } });
+  return true;
+}
+async function raiseTasks(prisma, now = /* @__PURE__ */ new Date()) {
+  const settings = await getSettings(prisma);
+  let raised = 0;
+  await transaction(prisma, async (tx) => {
+    const low = await tx.creditGrant.findMany({ where: { kind: "package", status: "active", minutesAvailable: { lte: settings.lowBalanceMinutes, gt: 0 } }, select: { id: true, familyId: true, studentId: true, minutesAvailable: true, family: { select: { billingEmail: true } } } });
+    for (const g of low) {
+      if (await openTask(tx, `low-balance:${g.id}`, { kind: "low_balance", title: `Low balance: ${Math.round(g.minutesAvailable / 60 * 10) / 10} hours left`, family: { connect: { id: g.familyId } }, ...g.studentId ? { student: { connect: { id: g.studentId } } } : {}, relatedType: "CreditGrant", relatedId: g.id, dueAt: now })) {
+        await queueEmail(tx, { to: g.family?.billingEmail ?? "", template: "low_balance", subject: "Time to top up your tutoring hours", relatedType: "CreditGrant", relatedId: g.id });
+        raised += 1;
+      }
+    }
+    const stale = await tx.lead.findMany({ where: { status: { in: ["new", "contacted", "proposal_sent"] }, updatedAt: { lte: new Date(now.getTime() - 3 * DAY) } }, select: { id: true, guardianName: true, status: true, locationId: true, ownerId: true } });
+    for (const l of stale) if (await openTask(tx, `lead-follow-up:${l.id}:${l.status}`, { kind: "lead_follow_up", title: `Follow up ${l.guardianName || "enquiry"} (${l.status.replace(/_/g, " ")})`, lead: { connect: { id: l.id } }, ...l.locationId ? { location: { connect: { id: l.locationId } } } : {}, ...l.ownerId ? { owner: { connect: { id: l.ownerId } } } : {}, relatedType: "Lead", relatedId: l.id, dueAt: now })) raised += 1;
+    const noProposal = await tx.assessment.findMany({ where: { status: "completed", completedAt: { lte: new Date(now.getTime() - 3 * DAY) }, student: { plans: { none: { status: { in: ["proposed", "accepted", "active"] } } } } }, select: { id: true, familyId: true, studentId: true, locationId: true } });
+    for (const a of noProposal) if (await openTask(tx, `no-proposal:${a.id}`, { kind: "assessment_follow_up", title: "Assessment done, no learning plan sent yet", ...a.familyId ? { family: { connect: { id: a.familyId } } } : {}, ...a.studentId ? { student: { connect: { id: a.studentId } } } : {}, ...a.locationId ? { location: { connect: { id: a.locationId } } } : {}, relatedType: "Assessment", relatedId: a.id, dueAt: now })) raised += 1;
+    const recent = await tx.booking.findMany({ where: { startsAt: { gte: new Date(now.getTime() - 30 * DAY), lte: now }, status: { in: ["attended", "late", "no_show", "cancelled_late", "cancelled_late_excused"] } }, select: { studentId: true, familyId: true, status: true, startsAt: true }, orderBy: { startsAt: "desc" } });
+    const byStudent = /* @__PURE__ */ new Map();
+    for (const b of recent) byStudent.set(b.studentId, [...byStudent.get(b.studentId) ?? [], b]);
+    for (const [studentId, list9] of byStudent) {
+      if (list9.length >= 2 && list9.slice(0, 2).every((b) => b.status !== "attended" && b.status !== "late")) {
+        if (await openTask(tx, `absences:${studentId}:${list9[0].startsAt.toISOString().slice(0, 10)}`, { kind: "absence_streak", title: "Two absences in a row", student: { connect: { id: studentId } }, family: { connect: { id: list9[0].familyId } }, relatedType: "Student", relatedId: studentId, dueAt: now })) raised += 1;
+      }
+    }
+    const ending = await tx.membership.findMany({ where: { status: { in: ["cancelling", "paused"] }, endsAt: { gt: now, lte: new Date(now.getTime() + 7 * DAY) } }, select: { id: true, familyId: true, studentId: true } });
+    for (const m of ending) if (await openTask(tx, `membership-ending:${m.id}`, { kind: "membership_ending", title: "Membership ends this week", family: { connect: { id: m.familyId } }, student: { connect: { id: m.studentId } }, relatedType: "Membership", relatedId: m.id, dueAt: now })) raised += 1;
+    const fresh = await tx.enrollment.findMany({ where: { status: "active", startDate: { gte: new Date(now.getTime() - 8 * DAY), lte: new Date(now.getTime() - 6 * DAY) } }, select: { id: true, familyId: true, studentId: true, locationId: true } });
+    for (const e of fresh) if (await openTask(tx, `first-week:${e.id}`, { kind: "first_week_check_in", title: "First-week check-in with the family", family: { connect: { id: e.familyId } }, student: { connect: { id: e.studentId } }, ...e.locationId ? { location: { connect: { id: e.locationId } } } : {}, relatedType: "Enrollment", relatedId: e.id, dueAt: now })) raised += 1;
+  });
+  const soon = await prisma.booking.findMany({ where: { status: "booked", startsAt: { gt: new Date(now.getTime() + 20 * HOUR), lte: new Date(now.getTime() + 28 * HOUR) } }, select: { id: true, startsAt: true, family: { select: { billingEmail: true } } } });
+  for (const b of soon) {
+    const already = await prisma.notificationLog.findFirst({ where: { template: "session_reminder", relatedId: b.id }, select: { id: true } });
+    if (!already) await queueEmail(prisma, { to: b.family?.billingEmail ?? "", template: "session_reminder", subject: `Reminder: session on ${b.startsAt.toISOString().slice(0, 16).replace("T", " ")} UTC`, relatedType: "Booking", relatedId: b.id });
+  }
+  return { raised };
+}
+async function generateAll(prisma, now = /* @__PURE__ */ new Date()) {
+  const settings = await getSettings(prisma);
+  const through = new Date(now.getTime() + settings.bookingHorizonDays * DAY);
+  const series = await prisma.sessionSeries.findMany({ where: { status: "active", OR: [{ generatedThrough: null }, { generatedThrough: { lt: through } }] }, select: { id: true } });
+  let generated = 0;
+  for (const s of series) generated += await transaction(prisma, (tx) => generateSessions(tx, s.id, through));
+  return { generated };
+}
+async function runDailyJobs(prisma, now = /* @__PURE__ */ new Date()) {
+  const started = Date.now();
+  const steps = {};
+  const step = async (name, fn) => {
+    try {
+      steps[name] = await fn();
+    } catch (error) {
+      steps[name] = { error: error.message };
+      console.error(`daily job ${name} failed`, error?.message);
+    }
+  };
+  const got = await prisma.$queryRaw`SELECT pg_try_advisory_lock(hashtextextended('daily-jobs', 0)) AS ok`;
+  if (!got[0]?.ok) return { skipped: "another run is in progress" };
+  try {
+    await step("sessions", () => generateAll(prisma, now));
+    await step("billing", async () => {
+      const r = await runMembershipBilling(prisma, now);
+      return r.reduce((acc, x) => ({ ...acc, [x.outcome]: (acc[x.outcome] ?? 0) + 1 }), {});
+    });
+    await step("memberships", () => advanceMemberships(prisma, now));
+    await step("credits", () => expireCredits(prisma, now));
+    await step("tasks", () => raiseTasks(prisma, now));
+    await step("offers", async () => {
+      const r = await prisma.offer.updateMany({ where: { status: "sent", expiresAt: { lte: now } }, data: { status: "expired", openKey: null } });
+      return { expired: r.count };
+    });
+    await step("email", () => deliverQueued(prisma));
+    await prisma.businessSettings.upsert({ where: { id: 1 }, create: { id: 1, lastDailyJobsAt: now }, update: { lastDailyJobsAt: now } });
+  } finally {
+    await prisma.$queryRaw`SELECT pg_advisory_unlock(hashtextextended('daily-jobs', 0))`;
+  }
+  return { ranAt: now.toISOString(), ms: Date.now() - started, steps };
+}
+var hashSecret = (s) => (0, import_node_crypto8.createHash)("sha256").update(s).digest("hex");
+
+// features/keystone/mutations/memberships.ts
+init_settings();
+var gql4 = String.raw;
+var keyOf4 = (a) => typeof a?.idempotencyKey === "string" ? a.idempotencyKey : null;
+var typeDefs4 = gql4`
+  type Query {
+    membershipPlanChangePreview(membershipId: ID!, planId: ID!): JSON
+  }
+  type Mutation {
+    requestMembershipPause(membershipId: ID!, from: String!, until: String!, idempotencyKey: String): CommandResult!
+    requestMembershipCancel(membershipId: ID!, idempotencyKey: String): CommandResult!
+    pauseMembership(membershipId: ID!, from: String!, until: String!, reason: String, idempotencyKey: String): CommandResult!
+    endMembership(membershipId: ID!, mode: String!, refund: Boolean, reason: String!, idempotencyKey: String): CommandResult!
+    changeMembershipPlan(membershipId: ID!, planId: ID!, effective: String!, idempotencyKey: String): CommandResult!
+    runMembershipBilling(membershipId: ID): CommandResult!
+    reconcileBillingAttempt(billingAttemptId: ID!): CommandResult!
+    expireCredits: CommandResult!
+    grantGoodwillCredit(familyId: ID!, studentId: ID, programId: ID, minutes: Int!, expiresInDays: Int, reason: String!, idempotencyKey: String): CommandResult!
+    runDailyJobs: CommandResult!
+    rotateJobsSecret: CommandResult!
+  }
+`;
+var fail2 = (error) => ({ success: false, error: error instanceof CommandError ? error.message : "Something went wrong. Please try again.", id: null, data: null });
+async function actorOf2(context) {
+  return context.session?.itemId ? loadActor(context.sudo().prisma, context.session.itemId) : null;
+}
+async function membershipFor(tx, id) {
+  const m = await tx.membership.findUnique({ where: { id }, include: { enrollment: { select: { locationId: true } } } });
+  if (!m) throw new CommandError("That membership was not found.");
+  return { m, locationId: m.enrollment?.locationId ?? null };
+}
+var resolvers4 = {
+  Query: {
+    membershipPlanChangePreview: async (_, args, context) => {
+      const prisma = context.sudo().prisma;
+      const actor = await actorOf2(context);
+      const { locationId } = await membershipFor(prisma, String(args.membershipId));
+      requireFlag(actor, "canManageBilling", locationId);
+      return planChangePreview(prisma, String(args.membershipId), String(args.planId));
+    }
+  },
+  Mutation: {
+    requestMembershipPause: (_, args, context) => runCommand(context, { name: "requestMembershipPause", idempotencyKey: keyOf4(args), input: { m: args.membershipId, f: args.from, u: args.until } }, async (tx, actor) => {
+      const { m } = await membershipFor(tx, String(args.membershipId));
+      await requireGuardianOf(tx, actor, m.familyId);
+      const r = await applyPause(tx, m, requireDate(args.from, "Pause start"), requireDate(args.until, "Pause end"), actor.userId, { staff: false });
+      return { id: m.id, data: { ...r, from: r.from.toISOString(), until: r.until.toISOString(), nextBillDate: r.nextBillDate?.toISOString() ?? null } };
+    }),
+    requestMembershipCancel: (_, args, context) => runCommand(context, { name: "requestMembershipCancel", idempotencyKey: keyOf4(args), input: { m: args.membershipId } }, async (tx, actor) => {
+      const { m } = await membershipFor(tx, String(args.membershipId));
+      await requireGuardianOf(tx, actor, m.familyId);
+      const r = await giveNotice(tx, m, actor.userId);
+      return { id: m.id, data: { endsAt: r.endsAt.toISOString(), released: r.released } };
+    }),
+    pauseMembership: (_, args, context) => runCommand(context, { name: "pauseMembership", idempotencyKey: keyOf4(args), input: { m: args.membershipId, f: args.from, u: args.until } }, async (tx, actor) => {
+      const { m, locationId } = await membershipFor(tx, String(args.membershipId));
+      requireFlag(actor, "canManageBilling", locationId);
+      const r = await applyPause(tx, m, requireDate(args.from, "Pause start"), requireDate(args.until, "Pause end"), actor.userId, { staff: true });
+      return { id: m.id, data: { ...r, from: r.from.toISOString(), until: r.until.toISOString(), nextBillDate: r.nextBillDate?.toISOString() ?? null, reason: optionalString(args.reason, 300) } };
+    }),
+    endMembership: (_, args, context) => runCommand(context, { name: "endMembership", idempotencyKey: keyOf4(args), input: { m: args.membershipId, mode: args.mode, r: Boolean(args.refund) } }, async (tx, actor) => {
+      const { m, locationId } = await membershipFor(tx, String(args.membershipId));
+      requireFlag(actor, "canManageBilling", locationId);
+      const reason = requireString(args.reason, "Reason", 300);
+      if (args.mode === "notice") {
+        const r2 = await giveNotice(tx, m, actor.userId);
+        return { id: m.id, data: { mode: "notice", endsAt: r2.endsAt.toISOString(), released: r2.released } };
+      }
+      if (args.mode !== "now") throw new CommandError("Choose \u201Cat the end of the notice period\u201D or \u201Cnow\u201D.");
+      if (args.refund) requireFlag(actor, "canIssueRefunds", locationId);
+      const r = await endNow(tx, m.id, { refund: Boolean(args.refund), reason, actorId: actor.userId });
+      return { id: m.id, data: { mode: "now", refundAmount: r.refundAmount }, after: async () => {
+        for (const id of r.refundIds) await processRefund(context.sudo().prisma, id);
+      } };
+    }),
+    changeMembershipPlan: (_, args, context) => runCommand(context, { name: "changeMembershipPlan", idempotencyKey: keyOf4(args), input: { m: args.membershipId, p: args.planId, e: args.effective } }, async (tx, actor) => {
+      const { m, locationId } = await membershipFor(tx, String(args.membershipId));
+      requireFlag(actor, "canManageBilling", locationId);
+      if (!["next_period", "now"].includes(args.effective)) throw new CommandError("Choose when the plan changes: now or at the next bill date.");
+      const r = await changePlan(tx, m.id, String(args.planId), args.effective, actor.userId);
+      return { id: m.id, data: r };
+    }),
+    runMembershipBilling: async (_, args, context) => {
+      try {
+        const actor = await actorOf2(context);
+        requireFlag(actor, "canManageBilling");
+        const prisma = context.sudo().prisma;
+        if (args.membershipId) {
+          const { locationId } = await membershipFor(prisma, String(args.membershipId));
+          requireFlag(actor, "canManageBilling", locationId);
+          const r = await billMembership(prisma, String(args.membershipId));
+          return { success: true, error: null, id: args.membershipId, data: r };
+        }
+        requireFlag(actor, "canManageSettings");
+        const results = await runMembershipBilling(prisma);
+        return { success: true, error: null, id: null, data: { results } };
+      } catch (error) {
+        return fail2(error);
+      }
+    },
+    reconcileBillingAttempt: async (_, args, context) => {
+      try {
+        const actor = await actorOf2(context);
+        const prisma = context.sudo().prisma;
+        const a = await prisma.billingAttempt.findUnique({ where: { id: String(args.billingAttemptId) }, select: { membershipId: true } });
+        if (!a) throw new CommandError("That billing attempt was not found.");
+        const { locationId } = await membershipFor(prisma, a.membershipId);
+        requireFlag(actor, "canManageBilling", locationId);
+        const r = await reconcileAttempt(prisma, String(args.billingAttemptId));
+        return { success: true, error: null, id: String(args.billingAttemptId), data: r };
+      } catch (error) {
+        return fail2(error);
+      }
+    },
+    expireCredits: async (_, _args, context) => {
+      try {
+        requireFlag(await actorOf2(context), "canManageBilling");
+        return { success: true, error: null, id: null, data: await expireCredits(context.sudo().prisma) };
+      } catch (error) {
+        return fail2(error);
+      }
+    },
+    grantGoodwillCredit: (_, args, context) => runCommand(context, { name: "grantGoodwillCredit", idempotencyKey: keyOf4(args), input: { f: args.familyId, s: args.studentId ?? null, m: args.minutes } }, async (tx, actor) => {
+      const family = await tx.family.findUnique({ where: { id: String(args.familyId) }, select: { id: true, primaryLocationId: true } });
+      if (!family) throw new CommandError("That family was not found.");
+      requireFlag(actor, "canManageBilling", family.primaryLocationId ?? void 0);
+      const minutes = requireInt(args.minutes, "Minutes", 1, 6e3);
+      if (args.studentId) {
+        const s = await tx.student.findUnique({ where: { id: String(args.studentId) }, select: { familyId: true } });
+        if (s?.familyId !== family.id) throw new CommandError("That student is not in this family.");
+      }
+      const days = args.expiresInDays ? requireInt(args.expiresInDays, "Expiry days", 1, 730) : 60;
+      const g = await createGrant(tx, { familyId: family.id, studentId: args.studentId ? String(args.studentId) : null, programId: args.programId ? String(args.programId) : null, kind: "goodwill", minutes, expiresAt: new Date(Date.now() + days * DAY), note: requireString(args.reason, "Reason", 300), actorId: actor.userId });
+      return { id: g.id, data: { grantId: g.id, minutes } };
+    }),
+    runDailyJobs: async (_, _args, context) => {
+      try {
+        requireFlag(await actorOf2(context), "canManageSettings");
+        const r = await runDailyJobs(context.sudo().prisma);
+        return { success: !("skipped" in r), error: "skipped" in r ? "The daily jobs are already running." : null, id: null, data: r };
+      } catch (error) {
+        return fail2(error);
+      }
+    },
+    /** Onboarding and settings → jobs: a new secret for POST /api/jobs/daily, shown once. */
+    rotateJobsSecret: (_, _args, context) => runCommand(context, { name: "rotateJobsSecret", input: {} }, async (tx, actor) => {
+      requireFlag(actor, "canManageSettings");
+      const secret2 = (0, import_node_crypto9.randomBytes)(32).toString("base64url");
+      await tx.businessSettings.upsert({ where: { id: 1 }, create: { id: 1, jobsSecretHash: hashSecret(secret2) }, update: { jobsSecretHash: hashSecret(secret2) } });
+      await recordChange(tx, { type: "BusinessSettings", id: "1", actorId: actor.userId, reason: "jobs secret rotated" });
+      return { id: "1", data: { secret: secret2 } };
+    })
+  }
+};
+
 // features/keystone/queries/storefront.ts
 var storefront_exports = {};
 __export(storefront_exports, {
-  resolvers: () => resolvers4,
-  typeDefs: () => typeDefs4,
+  resolvers: () => resolvers5,
+  typeDefs: () => typeDefs5,
   tzOffset: () => tzOffset,
   zonedTime: () => zonedTime
 });
-var gql4 = String.raw;
-var typeDefs4 = gql4`
+var gql5 = String.raw;
+var typeDefs5 = gql5`
   type Query {
     storefrontBusiness: JSON
     storefrontPrograms(subject: String, level: String, mode: String): JSON
@@ -4747,6 +5567,7 @@ var typeDefs4 = gql4`
     storefrontTutors(filter: JSON): JSON
     storefrontTutor(slug: String!): JSON
     storefrontPricing: JSON
+    enrolmentOptions(programId: ID!): JSON
     storefrontPolicies: JSON
     assessmentSlots(programId: ID!, locationId: ID, mode: String, from: String, to: String): JSON
     openSessions(programId: ID, locationId: ID, from: String, to: String): JSON
@@ -4755,6 +5576,7 @@ var typeDefs4 = gql4`
     myUpcomingBookings(includePast: Boolean, studentId: ID): JSON
     myBooking(id: ID!): JSON
     myAssessment(id: ID!): JSON
+    myEnrolment(id: ID!): JSON
     myCredits: JSON
     myInvoices: JSON
     myInvoice(id: ID!): JSON
@@ -4876,7 +5698,7 @@ function sessionOut(s) {
   };
 }
 var sessionInclude = { program: true, subject: true, location: true, room: true, tutor: { select: { id: true, displayName: true, slug: true, publicProfile: true } } };
-var resolvers4 = {
+var resolvers5 = {
   Query: {
     async storefrontBusiness(_, __, context) {
       const prisma = context.sudo().prisma;
@@ -4963,6 +5785,36 @@ var resolvers4 = {
         reviews: reviews.map(reviewOut),
         siblingDiscountPercent: settings?.siblingDiscountPercent ?? 10
       };
+    },
+    /** Weekly class times (open group series) a family can pick at enrolment, with seats left. */
+    async enrolmentOptions(_, { programId }, context) {
+      const prisma = context.sudo().prisma;
+      const now = /* @__PURE__ */ new Date();
+      const series = await prisma.sessionSeries.findMany({
+        where: { programId, status: "active", enrollmentId: null, OR: [{ endDate: null }, { endDate: { gt: now } }], program: { status: "published" } },
+        include: { location: { select: { id: true, name: true, slug: true, timezone: true, status: true } }, subject: { select: { name: true } }, tutor: { select: { displayName: true, publicProfile: true } } },
+        orderBy: [{ weekday: "asc" }, { startMinute: "asc" }]
+      });
+      const live = series.filter((s) => !s.location || s.location.status !== "closed");
+      const out = await Promise.all(live.map(async (s) => {
+        const next = await prisma.session.findFirst({ where: { seriesId: s.id, status: "scheduled", startsAt: { gt: now } }, orderBy: { startsAt: "asc" }, select: { id: true, startsAt: true, capacity: true, _count: { select: { bookings: { where: { status: "booked" } } } } } });
+        const capacity = next?.capacity ?? s.capacity;
+        return {
+          id: s.id,
+          weekday: s.weekday,
+          startMinute: s.startMinute,
+          minutes: s.minutes,
+          mode: s.mode,
+          location: s.location ? { id: s.location.id, name: s.location.name, slug: s.location.slug } : null,
+          timezone: s.location?.timezone || await defaultTimezone(prisma),
+          subject: s.subject?.name ?? null,
+          tutor: s.tutor?.publicProfile ? s.tutor.displayName : null,
+          capacity,
+          seatsLeft: Math.max(0, capacity - (next?._count.bookings ?? 0)),
+          nextStartsAt: next?.startsAt ?? null
+        };
+      }));
+      return { series: out };
     },
     async storefrontLocations(_, __, context) {
       const prisma = context.sudo().prisma;
@@ -5315,6 +6167,44 @@ var resolvers4 = {
       if (!b) return null;
       return { id: b.id, status: b.status, source: b.source, minutes: b.minutes, cancelledAt: b.cancelledAt, student: b.student, session: sessionOut(b.session), funding: b.creditGrant ? { kind: b.creditGrant.kind, program: b.creditGrant.program?.name, expiresAt: b.creditGrant.expiresAt } : b.payAsYouGo ? { kind: "pay_as_you_go" } : null, reportId: b.reports[0]?.id ?? null };
     },
+    /** One of the family's enrolments with its checkout invoice (enrol confirmation, retry payment). */
+    async myEnrolment(_, { id }, context) {
+      const familyId = await myFamilyId(context);
+      if (!familyId) return null;
+      const prisma = context.sudo().prisma;
+      const e = await prisma.enrollment.findFirst({
+        where: { id, familyId },
+        include: {
+          program: { select: { id: true, name: true, slug: true, format: true } },
+          student: { select: { id: true, firstName: true, lastName: true } },
+          location: { select: { id: true, name: true, timezone: true } },
+          tutor: { select: { displayName: true } },
+          membership: { select: { status: true, price: true, currentPeriodEnd: true, plan: { select: { name: true } } } },
+          studentPackage: { select: { status: true, hours: true, price: true, package: { select: { name: true } } } },
+          bookings: { where: { status: "booked" }, select: { id: true, session: { select: { startsAt: true, endsAt: true } } }, orderBy: { session: { startsAt: "asc" } }, take: 6 }
+        }
+      });
+      if (!e) return null;
+      const lines = await prisma.invoiceLine.findMany({ where: { OR: [e.membershipId ? { membershipId: e.membershipId } : { id: "_" }, e.studentPackageId ? { studentPackageId: e.studentPackageId } : { id: "_" }] }, select: { invoiceId: true }, take: 1, orderBy: { createdAt: "asc" } });
+      const invoice = lines[0]?.invoiceId ? await prisma.invoice.findUnique({ where: { id: lines[0].invoiceId }, select: { id: true, number: true, status: true, total: true, amountPaid: true, currency: true, fulfilment: true } }) : null;
+      const tz = e.location?.timezone || await defaultTimezone(prisma);
+      return {
+        id: e.id,
+        status: e.status,
+        mode: e.mode,
+        fundingType: e.fundingType,
+        startDate: e.startDate,
+        timezone: tz,
+        program: e.program,
+        student: e.student,
+        location: e.location,
+        tutor: e.tutor?.displayName ?? null,
+        membership: e.membership ? { status: e.membership.status, price: e.membership.price, planName: e.membership.plan?.name, currentPeriodEnd: e.membership.currentPeriodEnd } : null,
+        studentPackage: e.studentPackage ? { status: e.studentPackage.status, hours: e.studentPackage.hours, price: e.studentPackage.price, name: e.studentPackage.package?.name } : null,
+        upcoming: e.bookings.map((b) => ({ id: b.id, startsAt: b.session?.startsAt, endsAt: b.session?.endsAt })),
+        invoice: invoice ? { id: invoice.id, number: invoice.number, status: invoice.status, total: invoice.total, amountPaid: invoice.amountPaid, currency: invoice.currency, missedSeats: invoice.fulfilment?.missedSeats ?? 0 } : null
+      };
+    },
     /** One of the family's assessments, with its fee invoice (confirmation page, schedule row). */
     async myAssessment(_, { id }, context) {
       const familyId = await myFamilyId(context);
@@ -5423,7 +6313,7 @@ async function locationOut(context, l) {
 // features/keystone/mutations/index.ts
 var graphql5 = String.raw;
 var COMMAND_OVERRIDES = /* @__PURE__ */ new Set(["createSessionSeries", "createPayrollRun", "createTutorApplication", "updateStudent"]);
-var modules = [storefront_exports, schedule_exports, assessments_exports, billing_exports];
+var modules = [storefront_exports, schedule_exports, assessments_exports, billing_exports, memberships_exports];
 function extendGraphqlSchema(baseSchema) {
   return (0, import_schema.mergeSchemas)({
     schemas: [baseSchema],
@@ -5447,7 +6337,7 @@ function extendGraphqlSchema(baseSchema) {
 }
 
 // features/keystone/lib/mail.ts
-var import_nodemailer = require("nodemailer");
+var import_nodemailer2 = require("nodemailer");
 function getBaseUrlForEmails() {
   if (process.env.SMTP_STORE_LINK) {
     return process.env.SMTP_STORE_LINK;
@@ -5455,7 +6345,7 @@ function getBaseUrlForEmails() {
   console.warn("SMTP_STORE_LINK not set. Please add SMTP_STORE_LINK to your environment variables for email links to work properly.");
   return "";
 }
-var transport = (0, import_nodemailer.createTransport)({
+var transport = (0, import_nodemailer2.createTransport)({
   // @ts-ignore
   host: process.env.SMTP_HOST,
   port: process.env.SMTP_PORT,
@@ -5508,7 +6398,7 @@ async function sendPasswordResetEmail(resetToken, to, baseUrl) {
     })
   });
   if (process.env.MAIL_USER?.includes("ethereal.email")) {
-    console.log(`\u{1F4E7} Message Sent!  Preview it at ${(0, import_nodemailer.getTestMessageUrl)(info)}`);
+    console.log(`\u{1F4E7} Message Sent!  Preview it at ${(0, import_nodemailer2.getTestMessageUrl)(info)}`);
   }
 }
 

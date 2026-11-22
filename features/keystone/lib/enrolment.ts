@@ -178,7 +178,7 @@ registerFulfilment('enrolment', async (tx, invoice, f) => {
   const now = new Date()
   if (e.status !== 'pending_payment') {
     // Paid after the checkout was cancelled: keep the money for staff to refund; nothing to start.
-    await tx.task.create({ data: { kind: 'billing', title: `Payment received for a cancelled checkout (invoice ${invoice.number})`, family: { connect: { id: invoice.familyId } }, relatedType: 'Invoice', relatedId: invoice.id, dueAt: now, openKey: `late-pay:${invoice.id}` } }).catch(() => {})
+    await tx.task.create({ data: { kind: 'billing_review', title: `Payment received for a cancelled checkout (invoice ${invoice.number})`, family: { connect: { id: invoice.familyId } }, relatedType: 'Invoice', relatedId: invoice.id, dueAt: now, openKey: `late-pay:${invoice.id}` } }).catch(() => {})
     return
   }
   // Centre programmes go straight to active; 1:1 managed programmes wait for a tutor match (W1.8, W2).
@@ -198,26 +198,7 @@ registerFulfilment('enrolment', async (tx, invoice, f) => {
   if (f.studentPackageId) await activatePackage(tx, f.studentPackageId, e.programId)
 
   // Fixed weekly seats for the next 4 weeks (W1.8). A seat that filled meanwhile is reported, not fatal.
-  const seriesIds: string[] = Array.isArray((e.preferredTimes as any)?.seriesIds) ? (e.preferredTimes as any).seriesIds : []
-  const booked: string[] = []
-  const missed: string[] = []
-  if (seriesIds.length && next === 'active') {
-    const through = new Date(now.getTime() + FIXED_SEAT_WEEKS * 7 * DAY)
-    for (const seriesId of seriesIds) {
-      await generateSessions(tx, seriesId, through)
-      const sessions = await tx.session.findMany({ where: { seriesId, status: 'scheduled', startsAt: { gt: now, lte: through } }, select: { id: true }, orderBy: { startsAt: 'asc' } })
-      for (const s of sessions) {
-        try {
-          const r = await bookSeat(tx, null, { sessionId: s.id, studentId: e.studentId, source: 'fixed_seat', whenFull: 'reject' })
-          if (r.kind === 'booked') { booked.push(r.bookingId); await tx.booking.update({ where: { id: r.bookingId }, data: { enrollment: { connect: { id: e.id } } } }) }
-        } catch (error) {
-          if (!(error instanceof CommandError)) throw error
-          missed.push(`${s.id}: ${error.message}`)
-        }
-      }
-    }
-    if (missed.length) await tx.task.create({ data: { kind: 'schedule', title: `${missed.length} fixed seat(s) could not be booked for a new enrolment`, family: { connect: { id: e.familyId } }, student: { connect: { id: e.studentId } }, relatedType: 'Enrollment', relatedId: e.id, dueAt: now, openKey: `seats:${e.id}` } })
-  }
+  const seats = next === 'active' ? await bookFixedSeats(tx, e.id, now, new Date(now.getTime() + FIXED_SEAT_WEEKS * 7 * DAY)) : { booked: 0, missed: 0 }
   // Lead → enrolled (W1.8)
   const lead = await tx.lead.findFirst({ where: { familyId: e.familyId, status: { in: ['new', 'contacted', 'assessment_booked', 'assessed', 'proposal_sent'] } }, select: { id: true, status: true }, orderBy: { createdAt: 'desc' } })
   if (lead) {
@@ -226,8 +207,34 @@ registerFulfilment('enrolment', async (tx, invoice, f) => {
   }
   if (e.planId) await tx.learningPlan.updateMany({ where: { id: e.planId, status: { in: ['proposed', 'accepted'] } }, data: { status: 'active' } })
   await tx.notificationLog.create({ data: { recipient: '', template: 'enrolment_confirmed', subject: `Enrolment confirmed: ${e.program?.name ?? ''}`, relatedType: 'Enrollment', relatedId: e.id, status: 'queued' } })
-  await tx.invoice.update({ where: { id: invoice.id }, data: { fulfilment: { ...f, bookedSeats: booked.length, missedSeats: missed.length } } })
+  await tx.invoice.update({ where: { id: invoice.id }, data: { fulfilment: { ...f, bookedSeats: seats.booked, missedSeats: seats.missed } } })
 })
+
+/** Book the enrolment's fixed weekly seats in (from, through]; skips ones already booked. */
+export async function bookFixedSeats(tx: Tx, enrollmentId: string, from: Date, through: Date) {
+  const e = await tx.enrollment.findUnique({ where: { id: enrollmentId }, select: { id: true, studentId: true, familyId: true, status: true, preferredTimes: true } })
+  const seriesIds: string[] = Array.isArray((e?.preferredTimes as any)?.seriesIds) ? (e.preferredTimes as any).seriesIds : []
+  if (!e || !seriesIds.length || e.status !== 'active') return { booked: 0, missed: 0 }
+  let booked = 0
+  const missed: string[] = []
+  for (const seriesId of seriesIds) {
+    await generateSessions(tx, seriesId, through)
+    const sessions = await tx.session.findMany({ where: { seriesId, status: 'scheduled', startsAt: { gt: new Date(Math.max(from.getTime(), Date.now())), lte: through }, bookings: { none: { studentId: e.studentId, status: { in: ['booked', 'attended', 'late', 'no_show'] } } } }, select: { id: true }, orderBy: { startsAt: 'asc' } })
+    for (const s of sessions) {
+      try {
+        const r = await bookSeat(tx, null, { sessionId: s.id, studentId: e.studentId, source: 'fixed_seat', whenFull: 'reject' })
+        if (r.kind === 'booked') { booked += 1; await tx.booking.update({ where: { id: r.bookingId }, data: { enrollment: { connect: { id: e.id } } } }) }
+      } catch (error) {
+        if (!(error instanceof CommandError)) throw error
+        missed.push(`${s.id}: ${error.message}`)
+      }
+    }
+  }
+  if (missed.length) {
+    await tx.task.upsert({ where: { openKey: `seats:${e.id}` }, create: { kind: 'schedule_problem', title: `${missed.length} fixed seat(s) could not be booked`, family: { connect: { id: e.familyId } }, student: { connect: { id: e.studentId } }, relatedType: 'Enrollment', relatedId: e.id, dueAt: new Date(), openKey: `seats:${e.id}`, outcomeNote: missed.join('; ').slice(0, 1000) }, update: { title: `${missed.length} fixed seat(s) could not be booked`, outcomeNote: missed.join('; ').slice(0, 1000) } })
+  }
+  return { booked, missed: missed.length }
+}
 
 async function activatePackage(tx: Tx, studentPackageId: string, programId: string | null) {
   const sp = await tx.studentPackage.findUnique({ where: { id: studentPackageId }, include: { package: { select: { expiryMonths: true, programId: true, name: true } } } })

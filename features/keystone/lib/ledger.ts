@@ -148,6 +148,23 @@ export async function removeUnused(tx: Tx, grantId: string, type: 'refund' | 'ad
   return minutes
 }
 
+/**
+ * Period rollover (W6.2): unused minutes of the last period move once into a new grant for the
+ * next period (`rollover_out` here, `rollover_in` on the new grant). A grant that was itself rolled
+ * in is expired instead, so credit never rolls twice. Held minutes stay with their bookings.
+ */
+export async function rollOverGrant(tx: Tx, grantId: string, into: { periodStart: Date; periodEnd: Date }, allow: boolean) {
+  const g = await tx.creditGrant.findUnique({ where: { id: grantId }, select: { id: true, familyId: true, studentId: true, programId: true, membershipId: true, minutesAvailable: true, status: true, rolledFromId: true, unlimited: true } })
+  if (!g || g.unlimited || !['active', 'exhausted'].includes(g.status)) return 0
+  if (!allow || g.rolledFromId || g.minutesAvailable <= 0) { await expireGrant(tx, g.id, g.rolledFromId ? 'Rolled-over credit expires after one period' : 'Period ended'); return 0 }
+  const minutes = g.minutesAvailable
+  const rows = await tx.creditGrant.updateMany({ where: { id: g.id, minutesAvailable: minutes, status: g.status }, data: { minutesAvailable: 0, status: 'expired' } })
+  if (rows.count !== 1) throw new CommandError('Credit changed while rolling over; retry.')
+  await entry(tx, { grantId: g.id, type: 'rollover_out', minutes: -minutes, note: 'Rolled into the next period' })
+  await createGrant(tx, { familyId: g.familyId, studentId: g.studentId, programId: g.programId, membershipId: g.membershipId, kind: 'membership_period', minutes, periodStart: into.periodStart, periodEnd: into.periodEnd, expiresAt: into.periodEnd, rolledFromId: g.id, note: 'Unused credit from the last period' })
+  return minutes
+}
+
 /** Staff adjustment (+ or −) with a guarded update. */
 export async function adjustGrant(tx: Tx, grantId: string, minutes: number, actorId: string, note: string) {
   const rows: number = await tx.$executeRaw`UPDATE "CreditGrant" SET "minutesAvailable" = "minutesAvailable" + ${minutes},
@@ -171,6 +188,8 @@ export async function pickGrant(tx: Tx, input: { familyId: string; studentId: st
         { OR: [{ programId: input.programId }, { programId: null }] },
         { OR: [{ expiresAt: null }, { expiresAt: { gte: input.startsAt } }] },
         { OR: [{ periodStart: null }, { periodStart: { lte: input.startsAt } }] },
+        // W6.3: past due holds back bookings beyond 7 days; suspended or ended memberships fund nothing.
+        { OR: [{ membershipId: null }, { membership: { status: { in: ['active', 'cancelling', 'paused'] } } }, ...(input.startsAt.getTime() - Date.now() <= 7 * 86400_000 ? [{ membership: { status: 'past_due' } }] : [])] },
       ],
     },
     select: { id: true, kind: true, unlimited: true, weeklyCap: true, minutesAvailable: true, expiresAt: true, createdAt: true },

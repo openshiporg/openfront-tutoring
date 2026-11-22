@@ -12,7 +12,7 @@ export const Task = list({
   access: scopedAccess({ read: 'canAccessDashboard', write: 'canAccessDashboard', location: 'location', noDelete: true }),
   ui: { listView: { initialColumns: ['kind', 'family', 'student', 'dueAt', 'status', 'owner'] } },
   fields: {
-    kind: choice(['no_show_follow_up', 'absence_streak', 'low_balance', 'failed_payment', 'assessment_follow_up', 'proposal_follow_up', 'first_week_check_in', 'membership_ending', 'credential_expiring', 'needs_cover', 'rematch_requested', 'pause_requested', 'cancel_requested', 'manual'], 'manual'),
+    kind: choice(['no_show_follow_up', 'absence_streak', 'low_balance', 'failed_payment', 'assessment_follow_up', 'proposal_follow_up', 'first_week_check_in', 'membership_ending', 'credential_expiring', 'needs_cover', 'rematch_requested', 'pause_requested', 'cancel_requested', 'lead_follow_up', 'billing_review', 'schedule_problem', 'manual'], 'manual'),
     title: text({ validation: { isRequired: true } }),
     family: relationship({ ref: 'Family.tasks' }),
     student: relationship({ ref: 'Student' }),
