@@ -84,6 +84,8 @@ export const Family = list({
 
 // §5.3 Student
 export const Student = list({
+  // Generated update is omitted: `updateStudent` is the §5.9 command for guardians and staff.
+  graphql: { omit: { update: true } },
   access: scopedAccess({ read: 'canManageFamilies', write: 'canManageFamilies', location: 'family.primaryLocation', guardian: 'family', tutorCustom: assignedStudentFilter }),
   ui: { listView: { initialColumns: ['firstName', 'lastName', 'family', 'level', 'status'] } },
   fields: {
@@ -248,6 +250,8 @@ export const TutorCredential = list({
 })
 
 export const TutorApplication = list({
+  // Generated create is omitted: `createTutorApplication` is the §5.9 staff command.
+  graphql: { omit: { create: true } },
   access: scopedAccess({ read: 'canManageTutors', write: 'canManageTutors', location: null }),
   ui: { listView: { initialColumns: ['name', 'email', 'status', 'createdAt'] } },
   fields: {

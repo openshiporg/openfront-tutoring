@@ -173,7 +173,8 @@ export const Offer = list({
 // §5.5 SessionSeries
 export const SessionSeries = list({
   access: scopedAccess({ read: 'canManageSchedule', write: false, location: 'location', tutor: 'tutor' }),
-  graphql: { plural: 'SessionSeriesList' },
+  // Generated create is omitted: `createSessionSeries` is the §5.9 command.
+  graphql: { plural: 'SessionSeriesList', omit: { create: true } },
   fields: {
     program: relationship({ ref: 'Program' }),
     subject: relationship({ ref: 'Subject' }),

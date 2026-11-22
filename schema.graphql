@@ -2389,53 +2389,6 @@ input StudentOrderByInput {
   updatedAt: OrderDirection
 }
 
-input StudentUpdateInput {
-  family: FamilyRelateToOneForUpdateInput
-  firstName: String
-  lastName: String
-  dateOfBirth: DateTime
-  level: LevelRelateToOneForUpdateInput
-  school: String
-  photo: ImageFieldInput
-  learningNotes: String
-  medicalNotes: String
-  pickupPeople: JSON
-  status: String
-  enrolments: EnrollmentRelateToManyForUpdateInput
-  assessments: AssessmentRelateToManyForUpdateInput
-  plans: LearningPlanRelateToManyForUpdateInput
-  bookings: BookingRelateToManyForUpdateInput
-  createdAt: DateTime
-  updatedAt: DateTime
-  createdBy: UserRelateToOneForUpdateInput
-}
-
-input AssessmentRelateToManyForUpdateInput {
-  disconnect: [AssessmentWhereUniqueInput!]
-  set: [AssessmentWhereUniqueInput!]
-  create: [AssessmentCreateInput!]
-  connect: [AssessmentWhereUniqueInput!]
-}
-
-input LearningPlanRelateToManyForUpdateInput {
-  disconnect: [LearningPlanWhereUniqueInput!]
-  set: [LearningPlanWhereUniqueInput!]
-  create: [LearningPlanCreateInput!]
-  connect: [LearningPlanWhereUniqueInput!]
-}
-
-input BookingRelateToManyForUpdateInput {
-  disconnect: [BookingWhereUniqueInput!]
-  set: [BookingWhereUniqueInput!]
-  create: [BookingCreateInput!]
-  connect: [BookingWhereUniqueInput!]
-}
-
-input StudentUpdateArgs {
-  where: StudentWhereUniqueInput!
-  data: StudentUpdateInput!
-}
-
 input StudentCreateInput {
   family: FamilyRelateToOneForCreateInput
   firstName: String
@@ -2595,6 +2548,13 @@ input StudentRelateToOneForUpdateInput {
   create: StudentCreateInput
   connect: StudentWhereUniqueInput
   disconnect: Boolean
+}
+
+input AssessmentRelateToManyForUpdateInput {
+  disconnect: [AssessmentWhereUniqueInput!]
+  set: [AssessmentWhereUniqueInput!]
+  create: [AssessmentCreateInput!]
+  connect: [AssessmentWhereUniqueInput!]
 }
 
 input LeadUpdateArgs {
@@ -2815,7 +2775,6 @@ input TutorCredentialRelateToManyForUpdateInput {
 }
 
 input TutorApplicationRelateToOneForUpdateInput {
-  create: TutorApplicationCreateInput
   connect: TutorApplicationWhereUniqueInput
   disconnect: Boolean
 }
@@ -2876,7 +2835,6 @@ input TutorCredentialRelateToManyForCreateInput {
 }
 
 input TutorApplicationRelateToOneForCreateInput {
-  create: TutorApplicationCreateInput
   connect: TutorApplicationWhereUniqueInput
 }
 
@@ -3296,29 +3254,6 @@ input TutorApplicationUpdateInput {
 input TutorApplicationUpdateArgs {
   where: TutorApplicationWhereUniqueInput!
   data: TutorApplicationUpdateInput!
-}
-
-input TutorApplicationCreateInput {
-  name: String
-  email: String
-  phone: String
-  subjectsText: String
-  subjects: SubjectRelateToManyForCreateInput
-  levels: String
-  modes: [String!]
-  areas: String
-  availability: JSON
-  cv: FileFieldInput
-  references: JSON
-  coverNote: String
-  source: String
-  status: String
-  reviewer: UserRelateToOneForCreateInput
-  notes: String
-  tutor: TutorRelateToOneForCreateInput
-  createdAt: DateTime
-  updatedAt: DateTime
-  createdBy: UserRelateToOneForCreateInput
 }
 
 type Assessment {
@@ -4030,7 +3965,6 @@ input StudentPackageRelateToOneForUpdateInput {
 input SessionSeriesRelateToManyForUpdateInput {
   disconnect: [SessionSeriesWhereUniqueInput!]
   set: [SessionSeriesWhereUniqueInput!]
-  create: [SessionSeriesCreateInput!]
   connect: [SessionSeriesWhereUniqueInput!]
 }
 
@@ -4039,6 +3973,13 @@ input OfferRelateToManyForUpdateInput {
   set: [OfferWhereUniqueInput!]
   create: [OfferCreateInput!]
   connect: [OfferWhereUniqueInput!]
+}
+
+input BookingRelateToManyForUpdateInput {
+  disconnect: [BookingWhereUniqueInput!]
+  set: [BookingWhereUniqueInput!]
+  create: [BookingCreateInput!]
+  connect: [BookingWhereUniqueInput!]
 }
 
 input EnrollmentUpdateArgs {
@@ -4085,7 +4026,6 @@ input StudentPackageRelateToOneForCreateInput {
 }
 
 input SessionSeriesRelateToManyForCreateInput {
-  create: [SessionSeriesCreateInput!]
   connect: [SessionSeriesWhereUniqueInput!]
 }
 
@@ -4313,34 +4253,6 @@ input SessionSeriesUpdateArgs {
   data: SessionSeriesUpdateInput!
 }
 
-input SessionSeriesCreateInput {
-  program: ProgramRelateToOneForCreateInput
-  subject: SubjectRelateToOneForCreateInput
-  location: LocationRelateToOneForCreateInput
-  room: RoomRelateToOneForCreateInput
-  tutor: TutorRelateToOneForCreateInput
-  mode: String
-  weekday: Int
-  startMinute: Int
-  minutes: Int
-  capacity: Int
-  startDate: DateTime
-  endDate: DateTime
-  enrollment: EnrollmentRelateToOneForCreateInput
-  status: String
-  meetingUrl: String
-  generatedThrough: DateTime
-  sessions: SessionRelateToManyForCreateInput
-  createdAt: DateTime
-  updatedAt: DateTime
-  createdBy: UserRelateToOneForCreateInput
-}
-
-input SessionRelateToManyForCreateInput {
-  create: [SessionCreateInput!]
-  connect: [SessionWhereUniqueInput!]
-}
-
 type Session {
   id: ID!
   series: SessionSeries
@@ -4463,7 +4375,6 @@ input SessionUpdateInput {
 }
 
 input SessionSeriesRelateToOneForUpdateInput {
-  create: SessionSeriesCreateInput
   connect: SessionSeriesWhereUniqueInput
   disconnect: Boolean
 }
@@ -4520,7 +4431,6 @@ input SessionCreateInput {
 }
 
 input SessionSeriesRelateToOneForCreateInput {
-  create: SessionSeriesCreateInput
   connect: SessionSeriesWhereUniqueInput
 }
 
@@ -6331,7 +6241,6 @@ input PayLineUpdateInput {
 }
 
 input PayrollRunRelateToOneForUpdateInput {
-  create: PayrollRunCreateInput
   connect: PayrollRunWhereUniqueInput
   disconnect: Boolean
 }
@@ -6361,7 +6270,6 @@ input PayLineCreateInput {
 }
 
 input PayrollRunRelateToOneForCreateInput {
-  create: PayrollRunCreateInput
   connect: PayrollRunWhereUniqueInput
 }
 
@@ -6435,21 +6343,6 @@ input PayrollRunUpdateInput {
 input PayrollRunUpdateArgs {
   where: PayrollRunWhereUniqueInput!
   data: PayrollRunUpdateInput!
-}
-
-input PayrollRunCreateInput {
-  location: LocationRelateToOneForCreateInput
-  periodStart: DateTime
-  periodEnd: DateTime
-  status: String
-  lines: PayLineRelateToManyForCreateInput
-  approvedBy: UserRelateToOneForCreateInput
-  approvedAt: DateTime
-  paidAt: DateTime
-  payments: JSON
-  createdAt: DateTime
-  updatedAt: DateTime
-  createdBy: UserRelateToOneForCreateInput
 }
 
 type PaymentProvider {
@@ -7639,8 +7532,6 @@ type Mutation {
   deleteFamilies(where: [FamilyWhereUniqueInput!]!): [Family]
   createStudent(data: StudentCreateInput!): Student
   createStudents(data: [StudentCreateInput!]!): [Student]
-  updateStudent(where: StudentWhereUniqueInput!, data: StudentUpdateInput!): Student
-  updateStudents(data: [StudentUpdateArgs!]!): [Student]
   deleteStudent(where: StudentWhereUniqueInput!): Student
   deleteStudents(where: [StudentWhereUniqueInput!]!): [Student]
   createLead(data: LeadCreateInput!): Lead
@@ -7679,8 +7570,6 @@ type Mutation {
   updateTutorCredentials(data: [TutorCredentialUpdateArgs!]!): [TutorCredential]
   deleteTutorCredential(where: TutorCredentialWhereUniqueInput!): TutorCredential
   deleteTutorCredentials(where: [TutorCredentialWhereUniqueInput!]!): [TutorCredential]
-  createTutorApplication(data: TutorApplicationCreateInput!): TutorApplication
-  createTutorApplications(data: [TutorApplicationCreateInput!]!): [TutorApplication]
   updateTutorApplication(where: TutorApplicationWhereUniqueInput!, data: TutorApplicationUpdateInput!): TutorApplication
   updateTutorApplications(data: [TutorApplicationUpdateArgs!]!): [TutorApplication]
   deleteTutorApplication(where: TutorApplicationWhereUniqueInput!): TutorApplication
@@ -7721,8 +7610,6 @@ type Mutation {
   updateOffers(data: [OfferUpdateArgs!]!): [Offer]
   deleteOffer(where: OfferWhereUniqueInput!): Offer
   deleteOffers(where: [OfferWhereUniqueInput!]!): [Offer]
-  createSessionSeries(data: SessionSeriesCreateInput!): SessionSeries
-  createSessionSeriesList(data: [SessionSeriesCreateInput!]!): [SessionSeries]
   updateSessionSeries(where: SessionSeriesWhereUniqueInput!, data: SessionSeriesUpdateInput!): SessionSeries
   updateSessionSeriesList(data: [SessionSeriesUpdateArgs!]!): [SessionSeries]
   deleteSessionSeries(where: SessionSeriesWhereUniqueInput!): SessionSeries
@@ -7823,8 +7710,6 @@ type Mutation {
   updatePayLines(data: [PayLineUpdateArgs!]!): [PayLine]
   deletePayLine(where: PayLineWhereUniqueInput!): PayLine
   deletePayLines(where: [PayLineWhereUniqueInput!]!): [PayLine]
-  createPayrollRun(data: PayrollRunCreateInput!): PayrollRun
-  createPayrollRuns(data: [PayrollRunCreateInput!]!): [PayrollRun]
   updatePayrollRun(where: PayrollRunWhereUniqueInput!, data: PayrollRunUpdateInput!): PayrollRun
   updatePayrollRuns(data: [PayrollRunUpdateArgs!]!): [PayrollRun]
   deletePayrollRun(where: PayrollRunWhereUniqueInput!): PayrollRun
@@ -7900,6 +7785,19 @@ type Mutation {
   createInitialUser(data: CreateInitialUserInput!): UserAuthenticationWithPasswordSuccess!
   sendUserPasswordResetLink(email: String!): Boolean!
   redeemUserPasswordResetToken(email: String!, token: String!, password: String!): RedeemUserPasswordResetTokenResult
+  bookSession(sessionId: ID!, studentId: ID!, idempotencyKey: String): CommandResult!
+  staffBookSession(sessionId: ID!, studentId: ID!, whenFull: String, idempotencyKey: String): CommandResult!
+  cancelBooking(bookingId: ID!, excused: Boolean, reason: String, idempotencyKey: String): CommandResult!
+  rescheduleBooking(bookingId: ID!, newSessionId: ID!, idempotencyKey: String): CommandResult!
+  joinWaitlist(sessionId: ID!, studentId: ID!, idempotencyKey: String): CommandResult!
+  leaveWaitlist(waitlistEntryId: ID!, idempotencyKey: String): CommandResult!
+  markAttendance(bookingId: ID!, outcome: String!, idempotencyKey: String): CommandResult!
+  reopenBooking(bookingId: ID!, correctedStatus: String, reason: String!, idempotencyKey: String): CommandResult!
+  createSessionSeries(data: JSON!, idempotencyKey: String): CommandResult!
+  ensureSessionsGenerated(seriesId: ID, weeks: Int, idempotencyKey: String): CommandResult!
+  cancelSession(sessionId: ID!, reason: String!, note: String, idempotencyKey: String): CommandResult!
+  markSessionNeedsCover(sessionId: ID!, idempotencyKey: String): CommandResult!
+  assignSubstitute(sessionId: ID!, tutorId: ID!, idempotencyKey: String): CommandResult!
 }
 
 union UserAuthenticationWithPasswordResult = UserAuthenticationWithPasswordSuccess | UserAuthenticationWithPasswordFailure
@@ -8109,6 +8007,7 @@ type Query {
   authenticatedItem: AuthenticatedItem
   validateUserPasswordResetToken(email: String!, token: String!): ValidateUserPasswordResetTokenResult
   redirectToInit: Boolean
+  cancellationPreview(bookingId: ID!, excused: Boolean): CancellationPreview
 }
 
 union AuthenticatedItem = User
@@ -8247,4 +8146,22 @@ type KeystoneAdminUISort {
 enum KeystoneAdminUISortDirection {
   ASC
   DESC
+}
+
+type CommandResult {
+  success: Boolean!
+  error: String
+  id: ID
+  data: JSON
+}
+
+type CancellationPreview {
+  outcome: String!
+  hoursBefore: Float!
+  windowHours: Int!
+  creditReturned: Boolean!
+  makeUpGranted: Boolean!
+  makeUpExpiresAt: String
+  excusedLeftThisMonth: Int!
+  message: String!
 }

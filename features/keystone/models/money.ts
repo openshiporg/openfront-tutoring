@@ -249,6 +249,8 @@ export const PayLine = list({
 })
 
 export const PayrollRun = list({
+  // Generated create is omitted: `createPayrollRun` is the §5.9 command.
+  graphql: { omit: { create: true } },
   access: scopedAccess({ read: 'canManagePayroll', write: false, location: 'location' }),
   fields: {
     location: relationship({ ref: 'Location' }),

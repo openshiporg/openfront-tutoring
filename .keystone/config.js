@@ -699,6 +699,8 @@ var Family = (0, import_core4.list)({
   }
 });
 var Student = (0, import_core4.list)({
+  // Generated update is omitted: `updateStudent` is the §5.9 command for guardians and staff.
+  graphql: { omit: { update: true } },
   access: scopedAccess({ read: "canManageFamilies", write: "canManageFamilies", location: "family.primaryLocation", guardian: "family", tutorCustom: assignedStudentFilter }),
   ui: { listView: { initialColumns: ["firstName", "lastName", "family", "level", "status"] } },
   fields: {
@@ -853,6 +855,8 @@ var TutorCredential = (0, import_core4.list)({
   }
 });
 var TutorApplication = (0, import_core4.list)({
+  // Generated create is omitted: `createTutorApplication` is the §5.9 staff command.
+  graphql: { omit: { create: true } },
   access: scopedAccess({ read: "canManageTutors", write: "canManageTutors", location: null }),
   ui: { listView: { initialColumns: ["name", "email", "status", "createdAt"] } },
   fields: {
@@ -1050,7 +1054,8 @@ var Offer = (0, import_core6.list)({
 });
 var SessionSeries = (0, import_core6.list)({
   access: scopedAccess({ read: "canManageSchedule", write: false, location: "location", tutor: "tutor" }),
-  graphql: { plural: "SessionSeriesList" },
+  // Generated create is omitted: `createSessionSeries` is the §5.9 command.
+  graphql: { plural: "SessionSeriesList", omit: { create: true } },
   fields: {
     program: (0, import_fields9.relationship)({ ref: "Program" }),
     subject: (0, import_fields9.relationship)({ ref: "Subject" }),
@@ -1434,6 +1439,8 @@ var PayLine = (0, import_core7.list)({
   }
 });
 var PayrollRun = (0, import_core7.list)({
+  // Generated create is omitted: `createPayrollRun` is the §5.9 command.
+  graphql: { omit: { create: true } },
   access: scopedAccess({ read: "canManagePayroll", write: false, location: "location" }),
   fields: {
     location: (0, import_fields11.relationship)({ ref: "Location" }),
@@ -2016,21 +2023,1167 @@ async function redirectToInit(root, args, context) {
 }
 var redirectToInit_default = redirectToInit;
 
+// features/keystone/mutations/schedule.ts
+var schedule_exports = {};
+__export(schedule_exports, {
+  resolvers: () => resolvers,
+  typeDefs: () => typeDefs
+});
+
+// features/keystone/lib/command.ts
+var import_node_crypto2 = require("node:crypto");
+
+// features/keystone/lib/json.ts
+function canonicalJson(value) {
+  if (value instanceof Date) return JSON.stringify(value.toISOString());
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value;
+    return `{${Object.keys(record).filter((k) => record[k] !== void 0).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+// features/keystone/lib/errors.ts
+var CommandError = class extends Error {
+  constructor(message, data) {
+    super(message);
+    this.data = data;
+    this.name = "CommandError";
+  }
+};
+
+// features/keystone/lib/actor.ts
+var roleSelect = Object.fromEntries(ROLE_FLAGS.map((f) => [f, true]));
+async function loadActor(prisma, userId) {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      familyId: true,
+      role: { select: roleSelect },
+      tutor: { select: { id: true, status: true } },
+      locationMemberships: { where: { status: "active", location: { status: { not: "closed" } } }, select: { locationId: true, role: true } }
+    }
+  });
+  if (!user) return null;
+  return {
+    userId: user.id,
+    name: user.name,
+    email: user.email,
+    flags: user.role ?? {},
+    memberships: user.locationMemberships.filter((m) => m.locationId).map((m) => ({ locationId: m.locationId, role: m.role })),
+    tutorId: user.role?.isTutor && user.tutor && user.tutor.status !== "inactive" ? user.tutor.id : null,
+    familyId: user.familyId ?? null
+  };
+}
+function can(actor, flag) {
+  return Boolean(actor?.flags[flag]);
+}
+function isOwnerActor(actor) {
+  return can(actor, "canManageSettings");
+}
+function canAt(actor, flag, locationId) {
+  if (!can(actor, flag)) return false;
+  if (isOwnerActor(actor) || !LOCATION_SCOPED_FLAGS.has(flag)) return true;
+  const scoped = actor.memberships.filter((m) => locationRoleAllows(m.role, flag));
+  if (!scoped.length) return false;
+  if (!locationId) return true;
+  return scoped.some((m) => m.locationId === locationId);
+}
+function requireFlag(actor, flag, locationId) {
+  if (!actor) throw new CommandError("Sign in to continue.");
+  if (locationId === void 0 ? !can(actor, flag) || !isOwnerActor(actor) && LOCATION_SCOPED_FLAGS.has(flag) && !actor.memberships.some((m) => locationRoleAllows(m.role, flag)) : !canAt(actor, flag, locationId)) {
+    throw new CommandError("You do not have permission to do that here.");
+  }
+  return actor;
+}
+async function requireGuardianOf(tx, actor, familyId) {
+  if (!actor) throw new CommandError("Sign in to continue.");
+  if (!familyId) throw new CommandError("That was not found.");
+  const family = await tx.family.findFirst({ where: { id: familyId, guardians: { some: { id: actor.userId } } }, select: { id: true } });
+  if (!family) throw new CommandError("That was not found.");
+  return family.id;
+}
+
+// features/keystone/lib/command.ts
+var TX_OPTIONS = { maxWait: 6e4, timeout: 12e4 };
+function isRetryable(error) {
+  const code = error?.code;
+  return code === "P2034" || /deadlock detected|could not serialize/i.test(String(error?.message || ""));
+}
+async function transaction(prisma, fn, attempts = 6) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await prisma.$transaction(fn, TX_OPTIONS);
+    } catch (error) {
+      if (!isRetryable(error) || attempt >= attempts) throw error;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(400, 20 * 2 ** attempt) + Math.floor(Math.random() * 25)));
+    }
+  }
+}
+async function lockKey(tx, key) {
+  await tx.$queryRaw`SELECT true AS locked FROM (SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))) AS acquired`;
+}
+async function cas(tx, model, id, from, data, message) {
+  const expected = Array.isArray(from) ? from : [from];
+  const result = await tx[model].updateMany({ where: { id, status: { in: expected } }, data });
+  if (result.count !== 1) throw new CommandError(message || "This record was changed by someone else. Reload and try again.");
+}
+async function recordChange(tx, input) {
+  await tx.changeEvent.create({
+    data: {
+      aggregateType: input.type,
+      aggregateId: input.id,
+      from: input.from ?? "",
+      to: input.to ?? "",
+      reason: input.reason ?? "",
+      data: input.data ?? {},
+      at: /* @__PURE__ */ new Date(),
+      ...input.actorId ? { actor: { connect: { id: input.actorId } }, createdBy: { connect: { id: input.actorId } } } : {}
+    }
+  });
+}
+async function transition(tx, actor, model, type, id, from, to, extra = {}, reason) {
+  const current = await tx[model].findUnique({ where: { id }, select: { status: true } });
+  if (!current) throw new CommandError("That record was not found.");
+  const expected = Array.isArray(from) ? from : [from];
+  if (!expected.includes(current.status)) throw new CommandError(`This ${type.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase()} is ${current.status.replace(/_/g, " ")}; it cannot move to ${to.replace(/_/g, " ")}.`);
+  await cas(tx, model, id, expected, { ...extra, status: to });
+  await recordChange(tx, { type, id, from: current.status, to, actorId: actor?.userId, reason });
+}
+function isUnique(error) {
+  return error?.code === "P2002";
+}
+async function runCommand(context, options2, fn) {
+  const prisma = context.sudo().prisma;
+  let after;
+  try {
+    const actor = context.session?.itemId ? await loadActor(prisma, context.session.itemId) : null;
+    if (!actor && !options2.allowAnonymous) throw new CommandError("Sign in to continue.");
+    const key = typeof options2.idempotencyKey === "string" ? options2.idempotencyKey.trim() : "";
+    if (key && (key.length < 8 || key.length > 200)) throw new CommandError("The idempotency key must be 8 to 200 characters.");
+    const outcome = await transaction(prisma, async (tx) => {
+      let eventKey = "";
+      let payloadHash = "";
+      if (key) {
+        eventKey = `${options2.name}:${actor?.userId ?? "public"}:${key}`;
+        payloadHash = (0, import_node_crypto2.createHash)("sha256").update(canonicalJson({ name: options2.name, input: options2.input })).digest("hex");
+        await lockKey(tx, `command-receipt:${eventKey}`);
+        const existing = await tx.commandReceipt.findUnique({ where: { eventKey } });
+        if (existing) {
+          if (existing.payloadHash !== payloadHash) throw new CommandError("This idempotency key was already used with different details.");
+          return { replay: true, result: existing.result };
+        }
+      }
+      const value = await fn(tx, actor);
+      const result = { success: !value.refusal, error: value.refusal ?? null, id: value.id ?? null, data: value.data ?? null };
+      if (key) {
+        await tx.commandReceipt.create({
+          data: {
+            eventKey,
+            eventType: options2.name,
+            schemaVersion: 1,
+            aggregateType: options2.name,
+            aggregateId: value.id ?? "",
+            payload: { input: options2.input ?? null },
+            result,
+            actorId: actor?.userId ?? "",
+            payloadHash,
+            occurredAt: /* @__PURE__ */ new Date()
+          }
+        });
+      }
+      after = value.after;
+      return { replay: false, result };
+    });
+    if (!outcome.replay && after) {
+      try {
+        await after();
+      } catch (error) {
+        console.error(`${options2.name}: after-commit step failed`, error?.message);
+      }
+    }
+    return outcome.result;
+  } catch (error) {
+    if (error instanceof CommandError) return { success: false, error: error.message, id: null, data: error.data ?? null };
+    if (isUnique(error)) return { success: false, error: options2.conflictMessage || "That conflicts with an existing record.", id: null, data: null };
+    console.error(`${options2.name} failed:`, error?.message);
+    return { success: false, error: "Something went wrong. Please try again.", id: null, data: null };
+  }
+}
+function requireString(value, label2, max = 500) {
+  const text10 = typeof value === "string" ? value.trim() : "";
+  if (!text10) throw new CommandError(`${label2} is required.`);
+  if (text10.length > max) throw new CommandError(`${label2} is too long.`);
+  return text10;
+}
+function optionalString(value, max = 2e3) {
+  return typeof value === "string" ? value.trim().slice(0, max) : "";
+}
+function requireInt(value, label2, min = 0, max = Number.MAX_SAFE_INTEGER) {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < min || n > max) throw new CommandError(`${label2} must be a whole number${min === 0 ? "" : ` from ${min}`}.`);
+  return n;
+}
+function requireDate(value, label2) {
+  const date = value instanceof Date ? value : new Date(String(value ?? ""));
+  if (Number.isNaN(date.getTime())) throw new CommandError(`${label2} is not a valid date.`);
+  return date;
+}
+
+// features/keystone/lib/ledger.ts
+var SEAT_STATUSES = ["booked", "attended", "late", "no_show"];
+async function entry(tx, e) {
+  await tx.creditEntry.create({
+    data: {
+      grant: { connect: { id: e.grantId } },
+      type: e.type,
+      minutes: e.minutes,
+      note: e.note ?? "",
+      ...e.bookingId ? { booking: { connect: { id: e.bookingId } } } : {},
+      ...e.actorId ? { actor: { connect: { id: e.actorId } } } : {}
+    }
+  });
+}
+async function createGrant(tx, input) {
+  if (!Number.isInteger(input.minutes) || input.minutes < 0) throw new CommandError("Credit minutes must be a whole number of 0 or more.");
+  const grant = await tx.creditGrant.create({
+    data: {
+      family: { connect: { id: input.familyId } },
+      ...input.studentId ? { student: { connect: { id: input.studentId } } } : {},
+      ...input.programId ? { program: { connect: { id: input.programId } } } : {},
+      ...input.membershipId ? { membership: { connect: { id: input.membershipId } } } : {},
+      ...input.studentPackageId ? { studentPackage: { connect: { id: input.studentPackageId } } } : {},
+      ...input.sourceBookingId ? { sourceBooking: { connect: { id: input.sourceBookingId } } } : {},
+      ...input.rolledFromId ? { rolledFrom: { connect: { id: input.rolledFromId } } } : {},
+      ...input.actorId ? { createdBy: { connect: { id: input.actorId } } } : {},
+      kind: input.kind,
+      minutesGranted: input.minutes,
+      minutesAvailable: input.minutes,
+      unlimited: Boolean(input.unlimited),
+      weeklyCap: input.weeklyCap ?? null,
+      expiresAt: input.expiresAt ?? null,
+      periodStart: input.periodStart ?? null,
+      periodEnd: input.periodEnd ?? null,
+      status: input.minutes > 0 || input.unlimited ? "active" : "exhausted"
+    }
+  });
+  await entry(tx, { grantId: grant.id, type: input.kind === "membership_period" && input.rolledFromId ? "rollover_in" : "grant", minutes: input.minutes, note: input.note, actorId: input.actorId });
+  return grant;
+}
+async function reserveMinutes(tx, grant, minutes, validAt) {
+  if (grant.unlimited) return;
+  const rows = await tx.$executeRaw`
+    UPDATE "CreditGrant" SET "minutesAvailable" = "minutesAvailable" - ${minutes},
+      "status" = CASE WHEN "minutesAvailable" - ${minutes} = 0 THEN 'exhausted' ELSE "status" END,
+      "updatedAt" = now()
+    WHERE id = ${grant.id} AND status = 'active' AND "minutesAvailable" >= ${minutes}
+      AND ("expiresAt" IS NULL OR "expiresAt" >= ${validAt})`;
+  if (rows !== 1) throw new CommandError("Not enough credit for this session.");
+}
+async function writeHold(tx, grant, bookingId, minutes, actorId) {
+  await entry(tx, { grantId: grant.id, type: "hold", minutes: grant.unlimited ? 0 : -minutes, bookingId, note: grant.unlimited ? `${minutes} minutes (unlimited)` : "", actorId });
+}
+async function openHold(tx, bookingId) {
+  const entries = await tx.creditEntry.findMany({ where: { bookingId, type: { in: ["hold", "release", "debit", "reversal"] } }, orderBy: { createdAt: "asc" }, select: { grantId: true, type: true, minutes: true } });
+  const hold = entries.find((e) => e.type === "hold");
+  if (!hold) return null;
+  const opens = entries.filter((e) => e.type === "hold" || e.type === "reversal").length;
+  const closes = entries.filter((e) => e.type === "release" || e.type === "debit").length;
+  const last = [...entries].reverse().find((e) => e.type === "release" || e.type === "debit") ?? null;
+  return { grantId: hold.grantId, minutes: -hold.minutes, open: opens > closes, lastClose: last };
+}
+async function releaseHold(tx, bookingId, actorId, note = "") {
+  const hold = await openHold(tx, bookingId);
+  if (!hold || !hold.open) return;
+  await entry(tx, { grantId: hold.grantId, type: "release", minutes: hold.minutes, bookingId, note, actorId });
+  if (hold.minutes > 0) {
+    await tx.$executeRaw`UPDATE "CreditGrant" SET "minutesAvailable" = "minutesAvailable" + ${hold.minutes},
+      "status" = CASE WHEN status = 'exhausted' THEN 'active' ELSE status END, "updatedAt" = now() WHERE id = ${hold.grantId}`;
+    const grant = await tx.creditGrant.findUnique({ where: { id: hold.grantId }, select: { expiresAt: true, status: true } });
+    if (grant?.expiresAt && grant.expiresAt < /* @__PURE__ */ new Date() && grant.status === "active") await expireGrant(tx, hold.grantId, "Expired when the held minutes were returned");
+  }
+}
+async function debitHold(tx, bookingId, actorId, note = "") {
+  const hold = await openHold(tx, bookingId);
+  if (!hold || !hold.open) return;
+  await entry(tx, { grantId: hold.grantId, type: "debit", minutes: 0, bookingId, note: note || `${hold.minutes} minutes spent`, actorId });
+}
+async function reverseClose(tx, bookingId, actorId) {
+  const hold = await openHold(tx, bookingId);
+  if (!hold || hold.open || !hold.lastClose) return;
+  if (hold.lastClose.type === "release" && hold.minutes > 0) {
+    const rows = await tx.$executeRaw`UPDATE "CreditGrant" SET "minutesAvailable" = "minutesAvailable" - ${hold.minutes},
+      "status" = CASE WHEN "minutesAvailable" - ${hold.minutes} = 0 THEN 'exhausted' ELSE status END, "updatedAt" = now()
+      WHERE id = ${hold.grantId} AND status IN ('active') AND "minutesAvailable" >= ${hold.minutes}`;
+    if (rows !== 1) throw new CommandError("The credit returned for this booking has since been used, so it cannot be reopened.");
+    await entry(tx, { grantId: hold.grantId, type: "reversal", minutes: -hold.minutes, bookingId, note: "Reopened: release reversed", actorId });
+  } else {
+    await entry(tx, { grantId: hold.grantId, type: "reversal", minutes: 0, bookingId, note: "Reopened: debit reversed", actorId });
+  }
+}
+async function expireGrant(tx, grantId, note = "Expired") {
+  const grant = await tx.creditGrant.findUnique({ where: { id: grantId }, select: { minutesAvailable: true, status: true } });
+  if (!grant || !["active", "exhausted"].includes(grant.status)) return 0;
+  const minutes = grant.minutesAvailable;
+  const rows = await tx.creditGrant.updateMany({ where: { id: grantId, status: grant.status, minutesAvailable: minutes }, data: { minutesAvailable: 0, status: "expired" } });
+  if (rows.count !== 1) throw new CommandError("Credit changed while expiring; retry.");
+  if (minutes > 0) await entry(tx, { grantId, type: "expire", minutes: -minutes, note });
+  return minutes;
+}
+async function removeUnused(tx, grantId, type, status, actorId, note = "") {
+  const grant = await tx.creditGrant.findUnique({ where: { id: grantId }, select: { minutesAvailable: true, status: true } });
+  if (!grant) throw new CommandError("Credit not found.");
+  const minutes = grant.minutesAvailable;
+  const rows = await tx.creditGrant.updateMany({ where: { id: grantId, minutesAvailable: minutes }, data: { minutesAvailable: 0, status } });
+  if (rows.count !== 1) throw new CommandError("Credit changed; retry.");
+  if (minutes > 0) await entry(tx, { grantId, type, minutes: -minutes, note, actorId });
+  return minutes;
+}
+async function pickGrant(tx, input) {
+  const grants = await tx.creditGrant.findMany({
+    where: {
+      familyId: input.familyId,
+      status: "active",
+      OR: [{ studentId: input.studentId }, { studentId: null }],
+      AND: [
+        { OR: [{ programId: input.programId }, { programId: null }] },
+        { OR: [{ expiresAt: null }, { expiresAt: { gte: input.startsAt } }] },
+        { OR: [{ periodStart: null }, { periodStart: { lte: input.startsAt } }] }
+      ]
+    },
+    select: { id: true, kind: true, unlimited: true, weeklyCap: true, minutesAvailable: true, expiresAt: true, createdAt: true }
+  });
+  const rank = { make_up: 0, goodwill: 1, membership_period: 2, package: 3, pay_as_you_go: 4 };
+  grants.sort((a, b) => (rank[a.kind] ?? 9) - (rank[b.kind] ?? 9) || (a.expiresAt ? a.expiresAt.getTime() : Infinity) - (b.expiresAt ? b.expiresAt.getTime() : Infinity) || a.createdAt.getTime() - b.createdAt.getTime());
+  for (const grant of grants) {
+    if (grant.unlimited) {
+      if (grant.weeklyCap) {
+        const { start, end } = weekOf(input.startsAt);
+        const used = await tx.booking.count({ where: { creditGrantId: grant.id, startsAt: { gte: start, lt: end }, status: { in: [...SEAT_STATUSES, "cancelled_late", "cancelled_late_excused"] } } });
+        if (used >= grant.weeklyCap) continue;
+      }
+      return grant;
+    }
+    if (grant.minutesAvailable >= input.minutes) return grant;
+  }
+  return null;
+}
+function weekOf(at) {
+  const start = new Date(at);
+  const day = (start.getUTCDay() + 6) % 7;
+  start.setUTCDate(start.getUTCDate() - day);
+  start.setUTCHours(0, 0, 0, 0);
+  return { start, end: new Date(start.getTime() + 7 * 864e5) };
+}
+
+// features/keystone/lib/settings.ts
+var DEFAULT_SETTINGS = {
+  cancellationWindowHours: 24,
+  lateCancelCharged: true,
+  noShowCharged: true,
+  excusedAbsencesPerMonth: 1,
+  makeUpExpiryDays: 60,
+  membershipRolloverPeriods: 1,
+  membershipCancelNoticeDays: 30,
+  pauseMinDays: 14,
+  pauseMaxDays: 28,
+  pausesPerYear: 1,
+  pastDueRetryDays: [3, 7],
+  suspendAfterDays: 10,
+  siblingDiscountPercent: 10,
+  offerExpiryHours: 24,
+  freeRematches: 1,
+  trialChargedOnRematch: false,
+  tutorPaidOnLateCancelPercent: 100,
+  tutorPaidOnNoShowPercent: 100,
+  payrollPeriodDays: 14,
+  progressReportEverySessions: 12,
+  progressReportEveryWeeks: 4,
+  reassessEveryWeeks: 12,
+  lowBalanceMinutes: 120,
+  bookingHorizonDays: 42,
+  attendanceEditWindowHours: 48,
+  assessmentCancelRefundHours: 24,
+  assessmentFeeKeptOnLateCancel: true,
+  enrolmentFeeWaivedWithinDays: 90,
+  frontDeskRefundLimit: 0,
+  reopenWindowDays: 14,
+  policiesText: "",
+  jobsSecretHash: "",
+  lastDailyJobsAt: null
+};
+async function getSettings(db) {
+  const row = await db.businessSettings.findUnique({ where: { id: 1 } });
+  const merged = { ...DEFAULT_SETTINGS };
+  if (row) {
+    for (const key of Object.keys(DEFAULT_SETTINGS)) if (row[key] !== null && row[key] !== void 0) merged[key] = row[key];
+  }
+  if (!Array.isArray(merged.pastDueRetryDays)) merged.pastDueRetryDays = DEFAULT_SETTINGS.pastDueRetryDays;
+  return merged;
+}
+async function getBusiness(db) {
+  const row = await db.business.findUnique({ where: { id: 1 } });
+  return row ?? { id: 1, name: "", currency: "USD", country: "US", nextInvoiceNumber: 1001, supportEmail: "", careersEmail: "" };
+}
+var HOUR = 36e5;
+var DAY = 24 * HOUR;
+
+// features/keystone/lib/pay.ts
+async function rateFor(tx, tutorId, subjectId) {
+  if (subjectId) {
+    const ts = await tx.tutorSubject.findFirst({ where: { tutorId, subjectId }, select: { payRate: true } });
+    if (ts?.payRate) return ts.payRate;
+  }
+  const tutor = await tx.tutor.findUnique({ where: { id: tutorId }, select: { defaultPayRate: true } });
+  return tutor?.defaultPayRate ?? 0;
+}
+var amountFor = (rate, minutes, percent = 100) => Math.round(rate * minutes * percent / 6e3);
+async function voidByKey(tx, key, reason) {
+  const line = await tx.payLine.findUnique({ where: { activeKey: key }, select: { id: true, status: true } });
+  if (!line) return { voided: false, locked: false, line: null };
+  if (line.status !== "accrued") return { voided: false, locked: true, line };
+  await tx.payLine.updateMany({ where: { id: line.id, status: "accrued" }, data: { status: "void", activeKey: null, voidReason: reason } });
+  return { voided: true, locked: false, line };
+}
+async function payLocked(tx, booking) {
+  const locked = await tx.payLine.findFirst({
+    where: { OR: [{ activeKey: `booking:${booking.id}` }, { activeKey: `session:${booking.sessionId}` }], status: { in: ["approved", "paid"] } },
+    select: { id: true }
+  });
+  return Boolean(locked);
+}
+async function accruePay(tx, sessionId) {
+  const session = await tx.session.findUnique({
+    where: { id: sessionId },
+    select: { id: true, tutorId: true, subjectId: true, startsAt: true, endsAt: true, status: true, program: { select: { format: true } }, bookings: { select: { id: true, status: true, minutes: true } } }
+  });
+  if (!session?.tutorId) return;
+  const settings = await getSettings(tx);
+  const minutes = Math.round((session.endsAt.getTime() - session.startsAt.getTime()) / 6e4);
+  const rate = await rateFor(tx, session.tutorId, session.subjectId);
+  const percentFor = (status) => status === "attended" || status === "late" ? 100 : status === "cancelled_late" || status === "cancelled_late_excused" ? settings.lateCancelCharged ? settings.tutorPaidOnLateCancelPercent : 0 : status === "no_show" ? settings.noShowCharged ? settings.tutorPaidOnNoShowPercent : 0 : 0;
+  const kindFor = (status) => status === "no_show" ? "no_show" : status.startsWith("cancelled_late") ? "late_cancel" : "session";
+  if (session.program?.format === "one_to_one") {
+    for (const b of session.bookings) {
+      const key2 = `booking:${b.id}`;
+      const percent = session.status === "cancelled" ? 0 : percentFor(b.status);
+      const existing2 = await tx.payLine.findUnique({ where: { activeKey: key2 }, select: { id: true, status: true, amount: true, kind: true } });
+      const amount2 = amountFor(rate, b.minutes || minutes, percent);
+      if (existing2?.status && existing2.status !== "accrued") continue;
+      if (existing2 && (percent === 0 || existing2.amount !== amount2 || existing2.kind !== kindFor(b.status))) await voidByKey(tx, key2, "Attendance changed");
+      if (percent > 0 && !(existing2 && existing2.amount === amount2 && existing2.kind === kindFor(b.status))) {
+        await tx.payLine.create({ data: { tutor: { connect: { id: session.tutorId } }, session: { connect: { id: session.id } }, booking: { connect: { id: b.id } }, kind: kindFor(b.status), workedAt: session.startsAt, minutes: b.minutes || minutes, rate, amount: amount2, status: "accrued", activeKey: key2 } });
+      }
+    }
+    return;
+  }
+  const key = `session:${session.id}`;
+  const best = session.status === "cancelled" ? 0 : Math.max(0, ...session.bookings.map((b) => percentFor(b.status)));
+  const amount = amountFor(rate, minutes, best);
+  const existing = await tx.payLine.findUnique({ where: { activeKey: key }, select: { id: true, status: true, amount: true } });
+  if (existing?.status && existing.status !== "accrued") return;
+  if (existing && existing.amount !== amount) await voidByKey(tx, key, "Attendance changed");
+  if (best > 0 && !(existing && existing.amount === amount)) {
+    await tx.payLine.create({ data: { tutor: { connect: { id: session.tutorId } }, session: { connect: { id: session.id } }, kind: "session", workedAt: session.startsAt, minutes, rate, amount, status: "accrued", activeKey: key } });
+  }
+}
+async function voidSessionPay(tx, sessionId, reason) {
+  const lines = await tx.payLine.findMany({ where: { sessionId, status: "accrued" }, select: { id: true } });
+  for (const l of lines) await tx.payLine.updateMany({ where: { id: l.id, status: "accrued" }, data: { status: "void", activeKey: null, voidReason: reason } });
+  return lines.length;
+}
+async function adjustmentLine(tx, input) {
+  return tx.payLine.create({
+    data: {
+      tutor: { connect: { id: input.tutorId } },
+      session: { connect: { id: input.sessionId } },
+      kind: "adjustment",
+      workedAt: /* @__PURE__ */ new Date(),
+      minutes: 0,
+      rate: 0,
+      amount: input.amount,
+      status: "accrued",
+      note: input.note,
+      ...input.actorId ? { createdBy: { connect: { id: input.actorId } } } : {}
+    }
+  });
+}
+
+// features/keystone/lib/invoices.ts
+async function nextNumber(tx) {
+  await tx.business.upsert({ where: { id: 1 }, create: { id: 1 }, update: {} });
+  const rows = await tx.$queryRaw`
+    UPDATE "Business" SET "nextInvoiceNumber" = COALESCE("nextInvoiceNumber", 1001) + 1 WHERE id = 1
+    RETURNING COALESCE("nextInvoiceNumber", 1002) - 1 AS n`;
+  return Number(rows[0].n);
+}
+async function createInvoice(tx, input) {
+  if (!input.lines.length) throw new CommandError("An invoice needs at least one line.");
+  const business = await getBusiness(tx);
+  let taxRate = 0;
+  if (input.locationId) {
+    const loc = await tx.location.findUnique({ where: { id: input.locationId }, select: { taxRatePercent: true } });
+    taxRate = Number(loc?.taxRatePercent ?? 0);
+  }
+  const lines = input.lines.map((l) => ({ ...l, quantity: l.quantity ?? 1, amount: (l.quantity ?? 1) * l.unitAmount }));
+  const subtotal = lines.filter((l) => l.amount > 0).reduce((s, l) => s + l.amount, 0);
+  const lineDiscount = -lines.filter((l) => l.amount < 0).reduce((s, l) => s + l.amount, 0);
+  const discount = Math.min(subtotal, (input.discount ?? 0) + lineDiscount);
+  const tax = Math.round((subtotal - discount) * taxRate / 100);
+  const total = subtotal - discount + tax;
+  const status = input.status ?? "open";
+  const invoice = await tx.invoice.create({
+    data: {
+      number: await nextNumber(tx),
+      family: { connect: { id: input.familyId } },
+      ...input.locationId ? { location: { connect: { id: input.locationId } } } : {},
+      ...input.promoCodeId ? { promoCode: { connect: { id: input.promoCodeId } } } : {},
+      ...input.actorId ? { createdBy: { connect: { id: input.actorId } } } : {},
+      kind: input.kind,
+      status,
+      issuedAt: status === "open" ? /* @__PURE__ */ new Date() : null,
+      dueAt: input.dueAt ?? /* @__PURE__ */ new Date(),
+      subtotal,
+      discount,
+      tax,
+      total,
+      currency: business.currency || "USD",
+      fulfilment: input.fulfilment ?? {},
+      notes: input.notes ?? "",
+      lines: {
+        create: lines.map((l) => ({
+          description: l.description,
+          kind: l.kind,
+          quantity: l.quantity,
+          unitAmount: l.unitAmount,
+          amount: l.amount,
+          ...l.studentId ? { student: { connect: { id: l.studentId } } } : {},
+          ...l.programId ? { program: { connect: { id: l.programId } } } : {},
+          ...l.bookingId ? { booking: { connect: { id: l.bookingId } } } : {},
+          ...l.membershipId ? { membership: { connect: { id: l.membershipId } } } : {},
+          ...l.studentPackageId ? { studentPackage: { connect: { id: l.studentPackageId } } } : {},
+          ...l.assessmentId ? { assessment: { connect: { id: l.assessmentId } } } : {}
+        }))
+      }
+    }
+  });
+  return invoice;
+}
+
+// features/keystone/lib/booking.ts
+var activeKeyFor = (sessionId, studentId) => `${sessionId}:${studentId}`;
+async function lockSession(tx, sessionId) {
+  const rows = await tx.$queryRaw`SELECT id FROM "Session" WHERE id = ${sessionId} FOR UPDATE`;
+  if (!rows.length) throw new CommandError("That session was not found.");
+}
+async function seatsTaken(tx, sessionId) {
+  return tx.booking.count({ where: { sessionId, status: { in: [...SEAT_STATUSES] } } });
+}
+async function bookSeat(tx, actor, input) {
+  await lockSession(tx, input.sessionId);
+  const session = await tx.session.findUnique({
+    where: { id: input.sessionId },
+    include: { program: { select: { id: true, name: true, payAsYouGoPrice: true, format: true } }, location: { select: { id: true } } }
+  });
+  if (!session || !["scheduled", "needs_cover"].includes(session.status)) throw new CommandError("That session is not open for booking.");
+  if (session.startsAt.getTime() <= Date.now()) throw new CommandError("That session has already started.");
+  const student = await tx.student.findUnique({ where: { id: input.studentId }, select: { id: true, familyId: true, firstName: true, status: true } });
+  if (!student?.familyId) throw new CommandError("That student was not found.");
+  const existing = await tx.booking.findUnique({ where: { activeKey: activeKeyFor(session.id, student.id) }, select: { id: true } });
+  if (existing) throw new CommandError(`${student.firstName} is already booked on this session.`);
+  const taken = await seatsTaken(tx, session.id);
+  if (taken >= session.capacity) {
+    if (input.whenFull !== "waitlist") throw new CommandError("That session is full.");
+    return joinWaitlistInTx(tx, actor, session.id, student.id, student.familyId);
+  }
+  const overlap = await tx.booking.findFirst({
+    where: { studentId: student.id, status: { in: ["booked"] }, startsAt: { lt: session.endsAt }, endsAt: { gt: session.startsAt } },
+    select: { id: true }
+  });
+  if (overlap) throw new CommandError(`${student.firstName} already has a session at that time.`);
+  const minutes = Math.round((session.endsAt.getTime() - session.startsAt.getTime()) / 6e4);
+  const enrollment = await tx.enrollment.findFirst({
+    where: { studentId: student.id, programId: session.programId, status: { in: ["active", "matched"] } },
+    select: { id: true },
+    orderBy: { createdAt: "desc" }
+  });
+  const grant = await pickGrant(tx, { familyId: student.familyId, studentId: student.id, programId: session.programId, minutes, startsAt: session.startsAt });
+  let payAsYouGo = false;
+  if (!grant) {
+    const family = await tx.family.findUnique({ where: { id: student.familyId }, select: { payAsYouGoAllowed: true } });
+    if (!family?.payAsYouGoAllowed || !session.program?.payAsYouGoPrice) throw new CommandError("Not enough credit for this session.");
+    payAsYouGo = true;
+  }
+  if (grant) await reserveMinutes(tx, grant, minutes, session.startsAt);
+  const booking = await tx.booking.create({
+    data: {
+      session: { connect: { id: session.id } },
+      student: { connect: { id: student.id } },
+      family: { connect: { id: student.familyId } },
+      ...enrollment ? { enrollment: { connect: { id: enrollment.id } } } : {},
+      ...grant ? { creditGrant: { connect: { id: grant.id } } } : {},
+      ...actor ? { createdBy: { connect: { id: actor.userId } } } : {},
+      status: "booked",
+      activeKey: activeKeyFor(session.id, student.id),
+      source: grant?.kind === "make_up" ? "make_up" : input.source,
+      payAsYouGo,
+      minutes,
+      startsAt: session.startsAt,
+      endsAt: session.endsAt
+    }
+  });
+  let invoiceId = null;
+  if (grant) await writeHold(tx, grant, booking.id, minutes, actor?.userId);
+  else {
+    const invoice = await createInvoice(tx, {
+      familyId: student.familyId,
+      locationId: session.locationId,
+      kind: "pay_as_you_go",
+      actorId: actor?.userId,
+      lines: [{ description: `${session.program?.name ?? "Session"} (${session.startsAt.toISOString().slice(0, 10)})`, kind: "pay_as_you_go", unitAmount: session.program.payAsYouGoPrice, studentId: student.id, programId: session.programId, bookingId: booking.id }],
+      dueAt: session.startsAt
+    });
+    invoiceId = invoice.id;
+    await tx.booking.update({ where: { id: booking.id }, data: { invoice: { connect: { id: invoice.id } } } });
+  }
+  await recordChange(tx, { type: "Booking", id: booking.id, from: null, to: "booked", actorId: actor?.userId, data: { sessionId: session.id, grantId: grant?.id ?? null, payAsYouGo } });
+  return { kind: "booked", bookingId: booking.id, grantId: grant?.id ?? null, payAsYouGo, invoiceId };
+}
+async function joinWaitlistInTx(tx, actor, sessionId, studentId, familyId) {
+  const key = activeKeyFor(sessionId, studentId);
+  const existing = await tx.waitlistEntry.findUnique({ where: { activeKey: key }, select: { id: true, position: true } });
+  if (existing) return { kind: "waitlisted", waitlistEntryId: existing.id, position: existing.position };
+  const last = await tx.waitlistEntry.aggregate({ where: { sessionId }, _max: { position: true } });
+  const position = (last._max.position ?? 0) + 1;
+  const entry2 = await tx.waitlistEntry.create({
+    data: { session: { connect: { id: sessionId } }, student: { connect: { id: studentId } }, family: { connect: { id: familyId } }, status: "waiting", activeKey: key, position, ...actor ? { createdBy: { connect: { id: actor.userId } } } : {} }
+  });
+  await recordChange(tx, { type: "WaitlistEntry", id: entry2.id, to: "waiting", actorId: actor?.userId });
+  return { kind: "waitlisted", waitlistEntryId: entry2.id, position };
+}
+async function promoteWaitlist(tx, sessionId) {
+  const session = await tx.session.findUnique({ where: { id: sessionId }, select: { capacity: true, startsAt: true, status: true } });
+  if (!session || !["scheduled", "needs_cover"].includes(session.status) || session.startsAt.getTime() <= Date.now()) return [];
+  const promoted = [];
+  const waiting = await tx.waitlistEntry.findMany({ where: { sessionId, status: "waiting" }, orderBy: [{ position: "asc" }, { createdAt: "asc" }] });
+  for (const w of waiting) {
+    if (await seatsTaken(tx, sessionId) >= session.capacity) break;
+    try {
+      const result = await bookSeatIfFundable(tx, sessionId, w.studentId);
+      if (!result) continue;
+      await tx.waitlistEntry.updateMany({ where: { id: w.id, status: "waiting" }, data: { status: "promoted", activeKey: null, promotedAt: /* @__PURE__ */ new Date(), bookingId: result } });
+      await recordChange(tx, { type: "WaitlistEntry", id: w.id, from: "waiting", to: "promoted", data: { bookingId: result } });
+      promoted.push(result);
+    } catch (error) {
+      if (error instanceof CommandError) continue;
+      throw error;
+    }
+  }
+  return promoted;
+}
+async function bookSeatIfFundable(tx, sessionId, studentId) {
+  const session = await tx.session.findUnique({ where: { id: sessionId }, select: { programId: true, startsAt: true, endsAt: true, program: { select: { payAsYouGoPrice: true } } } });
+  const student = await tx.student.findUnique({ where: { id: studentId }, select: { familyId: true, family: { select: { payAsYouGoAllowed: true } } } });
+  const minutes = Math.round((session.endsAt - session.startsAt) / 6e4);
+  const overlap = await tx.booking.findFirst({ where: { studentId, status: "booked", startsAt: { lt: session.endsAt }, endsAt: { gt: session.startsAt } }, select: { id: true } });
+  if (overlap) return null;
+  const grant = await pickGrant(tx, { familyId: student.familyId, studentId, programId: session.programId, minutes, startsAt: session.startsAt });
+  if (!grant && !(student.family?.payAsYouGoAllowed && session.program?.payAsYouGoPrice)) return null;
+  const r = await bookSeat(tx, null, { sessionId, studentId, source: "waitlist", whenFull: "reject" });
+  return r.kind === "booked" ? r.bookingId : null;
+}
+async function previewCancel(tx, booking, excused) {
+  const settings = await getSettings(tx);
+  const hoursBefore = (booking.startsAt.getTime() - Date.now()) / HOUR;
+  const monthStart = new Date(booking.startsAt.getFullYear(), booking.startsAt.getMonth(), 1);
+  const monthEnd = new Date(booking.startsAt.getFullYear(), booking.startsAt.getMonth() + 1, 1);
+  const used = await tx.booking.count({ where: { studentId: booking.studentId, status: "cancelled_late_excused", startsAt: { gte: monthStart, lt: monthEnd } } });
+  const left = Math.max(0, settings.excusedAbsencesPerMonth - used);
+  const base = { hoursBefore: Math.round(hoursBefore * 10) / 10, windowHours: settings.cancellationWindowHours, excusedLeftThisMonth: left };
+  if (hoursBefore >= settings.cancellationWindowHours || !settings.lateCancelCharged) {
+    return { ...base, outcome: hoursBefore >= settings.cancellationWindowHours ? "cancelled_early" : "cancelled_late", creditReturned: true, makeUpGranted: false, makeUpExpiresAt: null, message: "Cancelling now returns the credit." };
+  }
+  if (excused && left > 0 && !booking.payAsYouGo) {
+    const exp = new Date(Date.now() + settings.makeUpExpiryDays * DAY);
+    return { ...base, outcome: "cancelled_late_excused", creditReturned: false, makeUpGranted: true, makeUpExpiresAt: exp.toISOString(), message: `This is inside ${settings.cancellationWindowHours} hours. The session is charged, and a make-up credit valid for ${settings.makeUpExpiryDays} days is added.` };
+  }
+  return { ...base, outcome: "cancelled_late", creditReturned: false, makeUpGranted: false, makeUpExpiresAt: null, message: `This is inside ${settings.cancellationWindowHours} hours, so the session is charged.` };
+}
+async function cancelSeat(tx, actor, bookingId, opts = {}) {
+  const booking = await tx.booking.findUnique({ where: { id: bookingId }, include: { session: { select: { id: true, programId: true, status: true } } } });
+  if (!booking) throw new CommandError("That booking was not found.");
+  await lockSession(tx, booking.sessionId);
+  if (booking.status !== "booked") throw new CommandError(`This booking is already ${booking.status.replace(/_/g, " ")}.`);
+  let outcome;
+  let preview = null;
+  if (opts.byCentre) outcome = "cancelled_by_centre";
+  else {
+    if (booking.startsAt.getTime() <= Date.now()) throw new CommandError("This session has started; ask the centre to mark attendance.");
+    preview = await previewCancel(tx, booking, Boolean(opts.excused));
+    outcome = preview.outcome;
+  }
+  const res = await tx.booking.updateMany({ where: { id: booking.id, status: "booked" }, data: { status: outcome, activeKey: null, cancelledAt: /* @__PURE__ */ new Date(), lateReason: opts.reason ?? "", ...actor ? { cancelledById: actor.userId } : {} } });
+  if (res.count !== 1) throw new CommandError("This booking was changed by someone else. Reload and try again.");
+  await recordChange(tx, { type: "Booking", id: booking.id, from: "booked", to: outcome, actorId: actor?.userId, reason: opts.reason });
+  if (preview?.creditReturned || outcome === "cancelled_by_centre" || outcome === "cancelled_early") {
+    await releaseHold(tx, booking.id, actor?.userId, outcome);
+    if (booking.payAsYouGo && booking.invoiceId) await voidUnpaidInvoice(tx, booking.invoiceId, actor, "Booking cancelled in time");
+  } else {
+    await debitHold(tx, booking.id, actor?.userId, outcome);
+  }
+  if (outcome === "cancelled_late_excused") {
+    const settings = await getSettings(tx);
+    await createGrant(tx, {
+      familyId: booking.familyId,
+      studentId: booking.studentId,
+      programId: booking.session.programId,
+      kind: "make_up",
+      minutes: booking.minutes,
+      expiresAt: new Date(Date.now() + settings.makeUpExpiryDays * DAY),
+      sourceBookingId: booking.id,
+      note: "Make-up for an excused late cancel",
+      actorId: actor?.userId
+    });
+  }
+  if (outcome !== "cancelled_by_centre") await accruePay(tx, booking.sessionId);
+  const promoted = await promoteWaitlist(tx, booking.sessionId);
+  return { outcome, preview, promoted };
+}
+async function voidUnpaidInvoice(tx, invoiceId, actor, reason) {
+  const inv = await tx.invoice.findUnique({ where: { id: invoiceId }, select: { status: true, amountPaid: true } });
+  if (!inv || inv.amountPaid > 0 || !["open", "draft"].includes(inv.status)) return false;
+  const r = await tx.invoice.updateMany({ where: { id: invoiceId, status: inv.status, amountPaid: 0 }, data: { status: "void" } });
+  if (r.count === 1) await recordChange(tx, { type: "Invoice", id: invoiceId, from: inv.status, to: "void", actorId: actor?.userId, reason });
+  return r.count === 1;
+}
+var ATTENDANCE_OUTCOMES = ["attended", "late", "no_show", "cancelled_late", "cancelled_late_excused"];
+async function markSeat(tx, actor, bookingId, outcome) {
+  const booking = await tx.booking.findUnique({ where: { id: bookingId }, include: { session: { select: { id: true, programId: true } } } });
+  if (!booking) throw new CommandError("That booking was not found.");
+  await lockSession(tx, booking.sessionId);
+  if (booking.status !== "booked") throw new CommandError(`Attendance is already marked (${booking.status.replace(/_/g, " ")}). A manager can reopen it.`);
+  const keepKey = outcome === "attended" || outcome === "late" || outcome === "no_show";
+  const res = await tx.booking.updateMany({ where: { id: booking.id, status: "booked" }, data: { status: outcome, markedById: actor.userId, markedAt: /* @__PURE__ */ new Date(), ...keepKey ? {} : { activeKey: null } } });
+  if (res.count !== 1) throw new CommandError("This booking was changed by someone else. Reload and try again.");
+  await recordChange(tx, { type: "Booking", id: booking.id, from: "booked", to: outcome, actorId: actor.userId });
+  await debitHold(tx, booking.id, actor.userId, outcome);
+  if (outcome === "cancelled_late_excused") {
+    const settings = await getSettings(tx);
+    await createGrant(tx, { familyId: booking.familyId, studentId: booking.studentId, programId: booking.session.programId, kind: "make_up", minutes: booking.minutes, expiresAt: new Date(Date.now() + settings.makeUpExpiryDays * DAY), sourceBookingId: booking.id, note: "Make-up for an excused absence", actorId: actor.userId });
+  }
+  if (outcome === "attended" || outcome === "late") {
+    if (booking.enrollmentId) await tx.enrollment.updateMany({ where: { id: booking.enrollmentId, trialAttendedAt: null, status: "matched" }, data: { trialAttendedAt: /* @__PURE__ */ new Date() } });
+    await tx.student.updateMany({ where: { id: booking.studentId, status: "prospect" }, data: { status: "active" } });
+  }
+  await accruePay(tx, booking.sessionId);
+  await completeSessionIfDone(tx, booking.sessionId, actor);
+}
+async function completeSessionIfDone(tx, sessionId, actor) {
+  const open = await tx.booking.count({ where: { sessionId, status: "booked" } });
+  if (open > 0) return false;
+  const s = await tx.session.findUnique({ where: { id: sessionId }, select: { status: true, startsAt: true } });
+  if (!s || !["scheduled", "in_progress", "needs_cover"].includes(s.status) || s.startsAt.getTime() > Date.now() + 15 * 6e4) return false;
+  const r = await tx.session.updateMany({ where: { id: sessionId, status: s.status }, data: { status: "completed" } });
+  if (r.count === 1) await recordChange(tx, { type: "Session", id: sessionId, from: s.status, to: "completed", actorId: actor?.userId });
+  return true;
+}
+async function reopenSeat(tx, actor, bookingId, correctedStatus, reason) {
+  const booking = await tx.booking.findUnique({ where: { id: bookingId }, include: { session: { select: { id: true, tutorId: true, subjectId: true, status: true, program: { select: { format: true } } } }, makeUpGrant: { select: { id: true, minutesGranted: true, minutesAvailable: true } } } });
+  if (!booking) throw new CommandError("That booking was not found.");
+  await lockSession(tx, booking.sessionId);
+  const settings = await getSettings(tx);
+  const final = ["attended", "late", "cancelled_early", "cancelled_late", "cancelled_late_excused", "no_show", "cancelled_by_centre"];
+  if (!final.includes(booking.status)) throw new CommandError("Only a marked or cancelled booking can be reopened.");
+  if (booking.startsAt.getTime() < Date.now() - settings.reopenWindowDays * DAY) throw new CommandError(`Bookings can be reopened for ${settings.reopenWindowDays} days.`);
+  if (await payLocked(tx, booking)) {
+    let delta = 0;
+    if (booking.session.tutorId && correctedStatus) {
+      const rate = await rateFor(tx, booking.session.tutorId, booking.session.subjectId);
+      const pct = (s) => s === "attended" || s === "late" ? 100 : s.startsWith("cancelled_late") ? settings.lateCancelCharged ? settings.tutorPaidOnLateCancelPercent : 0 : s === "no_show" ? settings.noShowCharged ? settings.tutorPaidOnNoShowPercent : 0 : 0;
+      delta = Math.round(rate * booking.minutes * (pct(correctedStatus) - pct(booking.status)) / 6e3);
+    }
+    let lineId = null;
+    if (delta !== 0 && booking.session.tutorId) {
+      const line = await adjustmentLine(tx, { tutorId: booking.session.tutorId, sessionId: booking.sessionId, amount: delta, note: `Correction for booking ${booking.id}: ${booking.status} \u2192 ${correctedStatus}. ${reason}`.trim(), actorId: actor.userId });
+      lineId = line.id;
+    }
+    await recordChange(tx, { type: "Booking", id: booking.id, from: booking.status, to: booking.status, actorId: actor.userId, reason: "reopen refused: pay approved", data: { adjustmentLineId: lineId, correctedStatus } });
+    return { reopened: false, adjustmentLineId: lineId };
+  }
+  if (booking.status === "cancelled_late_excused" && booking.makeUpGrant) {
+    if (booking.makeUpGrant.minutesAvailable < booking.makeUpGrant.minutesGranted) throw new CommandError("The make-up credit from this booking has been used, so it cannot be reopened.");
+    await removeUnused(tx, booking.makeUpGrant.id, "adjustment", "voided", actor.userId, "Booking reopened");
+    await tx.booking.update({ where: { id: booking.id }, data: { makeUpGrant: { disconnect: true } } });
+  }
+  await reverseClose(tx, booking.id, actor.userId);
+  const r = await tx.booking.updateMany({ where: { id: booking.id, status: booking.status }, data: { status: "booked", activeKey: activeKeyFor(booking.sessionId, booking.studentId), reopenedAt: /* @__PURE__ */ new Date(), markedAt: null, markedById: null, cancelledAt: null, cancelledById: null } });
+  if (r.count !== 1) throw new CommandError("This booking was changed by someone else. Reload and try again.");
+  await recordChange(tx, { type: "Booking", id: booking.id, from: booking.status, to: "booked", actorId: actor.userId, reason: reason || "reopened", data: { event: "reopened" } });
+  if (booking.session.status === "completed") {
+    await tx.session.updateMany({ where: { id: booking.sessionId, status: "completed" }, data: { status: "in_progress" } });
+    await recordChange(tx, { type: "Session", id: booking.sessionId, from: "completed", to: "in_progress", actorId: actor.userId, reason: "booking reopened" });
+  }
+  await accruePay(tx, booking.sessionId);
+  if (correctedStatus && ATTENDANCE_OUTCOMES.includes(correctedStatus)) await markSeat(tx, actor, booking.id, correctedStatus);
+  return { reopened: true, adjustmentLineId: null };
+}
+
+// features/keystone/lib/schedule.ts
+var import_tz = require("@date-fns/tz");
+function localStart(day, startMinute, timezone) {
+  return new Date(new import_tz.TZDate(day.y, day.m, day.d, Math.floor(startMinute / 60), startMinute % 60, timezone).getTime());
+}
+function weeklyDays(from, through, weekday, timezone) {
+  const out = [];
+  const start = new import_tz.TZDate(from.getTime(), timezone);
+  let cursor = new import_tz.TZDate(start.getFullYear(), start.getMonth(), start.getDate(), 12, 0, timezone);
+  while (cursor.getDay() !== weekday) cursor = new import_tz.TZDate(cursor.getTime() + DAY, timezone);
+  while (cursor.getTime() <= through.getTime() + DAY) {
+    out.push({ y: cursor.getFullYear(), m: cursor.getMonth(), d: cursor.getDate() });
+    cursor = new import_tz.TZDate(cursor.getTime() + 7 * DAY, timezone);
+  }
+  return out;
+}
+async function assertTutorFree(tx, tutorId, startsAt, endsAt, exceptSessionId, exceptSeriesId) {
+  await lockKey(tx, `tutor:${tutorId}`);
+  const clash = await tx.session.findFirst({
+    where: {
+      tutorId,
+      status: { in: ["scheduled", "in_progress", "needs_cover"] },
+      startsAt: { lt: endsAt },
+      endsAt: { gt: startsAt },
+      ...exceptSessionId ? { id: { not: exceptSessionId } } : {},
+      ...exceptSeriesId ? { NOT: { seriesId: exceptSeriesId } } : {}
+    },
+    select: { id: true }
+  });
+  if (clash) throw new CommandError("That tutor is already teaching at that time.");
+  const off = await tx.tutorTimeOff.findFirst({ where: { tutorId, status: "approved", startsAt: { lt: endsAt }, endsAt: { gt: startsAt } }, select: { id: true } });
+  if (off) throw new CommandError("That tutor has approved time off then.");
+  const assessment = await tx.assessment.findFirst({ where: { assessorId: tutorId, status: { in: ["scheduled", "in_progress"] }, scheduledAt: { lt: endsAt, gte: new Date(startsAt.getTime() - 4 * 36e5) } }, select: { scheduledAt: true, minutes: true } });
+  if (assessment && assessment.scheduledAt.getTime() + assessment.minutes * 6e4 > startsAt.getTime()) throw new CommandError("That tutor has an assessment at that time.");
+}
+async function assertRoomFree(tx, roomId, startsAt, endsAt, exceptSessionId, exceptSeriesId) {
+  await lockKey(tx, `room:${roomId}`);
+  const clash = await tx.session.findFirst({
+    where: {
+      roomId,
+      status: { in: ["scheduled", "in_progress", "needs_cover"] },
+      startsAt: { lt: endsAt },
+      endsAt: { gt: startsAt },
+      ...exceptSessionId ? { id: { not: exceptSessionId } } : {},
+      ...exceptSeriesId ? { NOT: { seriesId: exceptSeriesId } } : {}
+    },
+    select: { id: true }
+  });
+  if (clash) throw new CommandError("That room is already in use at that time.");
+}
+async function closedOn(tx, locationId, at) {
+  if (!locationId) return false;
+  const c = await tx.closure.findFirst({ where: { locationId, startsOn: { lte: at }, endsOn: { gte: new Date(at.getTime() - DAY) } }, select: { id: true } });
+  return Boolean(c);
+}
+async function generateSessions(tx, seriesId, through) {
+  await lockKey(tx, `series:${seriesId}`);
+  const series = await tx.sessionSeries.findUnique({ where: { id: seriesId }, include: { location: { select: { timezone: true } }, program: { select: { format: true } } } });
+  if (!series || series.status !== "active") return 0;
+  const tz = series.location?.timezone || "UTC";
+  const from = new Date(Math.max(series.startDate.getTime(), (series.generatedThrough?.getTime() ?? 0) + 1, Date.now() - DAY));
+  const end = series.endDate && series.endDate < through ? series.endDate : through;
+  if (end < from) return 0;
+  const rows = [];
+  for (const day of weeklyDays(from, end, series.weekday, tz)) {
+    const startsAt = localStart(day, series.startMinute, tz);
+    if (startsAt < from || startsAt > end) continue;
+    if (await closedOn(tx, series.locationId, startsAt)) continue;
+    const endsAt = new Date(startsAt.getTime() + series.minutes * 6e4);
+    if (series.tutorId) await assertTutorFree(tx, series.tutorId, startsAt, endsAt, null, series.id);
+    if (series.roomId) await assertRoomFree(tx, series.roomId, startsAt, endsAt, null, series.id);
+    rows.push({
+      seriesId: series.id,
+      programId: series.programId,
+      subjectId: series.subjectId,
+      locationId: series.locationId,
+      roomId: series.roomId,
+      tutorId: series.tutorId,
+      mode: series.mode,
+      startsAt,
+      endsAt,
+      capacity: series.capacity,
+      status: "scheduled",
+      meetingUrl: series.meetingUrl
+    });
+  }
+  const created = rows.length ? await tx.session.createMany({ data: rows, skipDuplicates: true }) : { count: 0 };
+  await tx.sessionSeries.update({ where: { id: series.id }, data: { generatedThrough: end } });
+  return created.count;
+}
+
+// features/keystone/mutations/schedule.ts
+var gql = String.raw;
+var typeDefs = gql`
+  type CommandResult {
+    success: Boolean!
+    error: String
+    id: ID
+    data: JSON
+  }
+
+  type CancellationPreview {
+    outcome: String!
+    hoursBefore: Float!
+    windowHours: Int!
+    creditReturned: Boolean!
+    makeUpGranted: Boolean!
+    makeUpExpiresAt: String
+    excusedLeftThisMonth: Int!
+    message: String!
+  }
+
+  type Query {
+    cancellationPreview(bookingId: ID!, excused: Boolean): CancellationPreview
+  }
+
+  type Mutation {
+    bookSession(sessionId: ID!, studentId: ID!, idempotencyKey: String): CommandResult!
+    staffBookSession(sessionId: ID!, studentId: ID!, whenFull: String, idempotencyKey: String): CommandResult!
+    cancelBooking(bookingId: ID!, excused: Boolean, reason: String, idempotencyKey: String): CommandResult!
+    rescheduleBooking(bookingId: ID!, newSessionId: ID!, idempotencyKey: String): CommandResult!
+    joinWaitlist(sessionId: ID!, studentId: ID!, idempotencyKey: String): CommandResult!
+    leaveWaitlist(waitlistEntryId: ID!, idempotencyKey: String): CommandResult!
+    markAttendance(bookingId: ID!, outcome: String!, idempotencyKey: String): CommandResult!
+    reopenBooking(bookingId: ID!, correctedStatus: String, reason: String!, idempotencyKey: String): CommandResult!
+    createSessionSeries(data: JSON!, idempotencyKey: String): CommandResult!
+    ensureSessionsGenerated(seriesId: ID, weeks: Int, idempotencyKey: String): CommandResult!
+    cancelSession(sessionId: ID!, reason: String!, note: String, idempotencyKey: String): CommandResult!
+    markSessionNeedsCover(sessionId: ID!, idempotencyKey: String): CommandResult!
+    assignSubstitute(sessionId: ID!, tutorId: ID!, idempotencyKey: String): CommandResult!
+  }
+`;
+var keyOf = (a) => typeof a?.idempotencyKey === "string" ? a.idempotencyKey : null;
+async function sessionLocation(tx, sessionId) {
+  const s = await tx.session.findUnique({ where: { id: sessionId }, select: { id: true, locationId: true, tutorId: true, startsAt: true, endsAt: true, status: true, programId: true } });
+  if (!s) throw new CommandError("That session was not found.");
+  return s;
+}
+async function assertMayMark(tx, actor, booking) {
+  const s = await sessionLocation(tx, booking.sessionId);
+  if (canAt(actor, "canManageSchedule", s.locationId) || canAt(actor, "canMarkAttendance", s.locationId) && !actor.flags.isTutor) return s;
+  if (actor.tutorId && s.tutorId === actor.tutorId) {
+    const settings = await getSettings(tx);
+    const now = Date.now();
+    if (now < s.startsAt.getTime() - 15 * 6e4) throw new CommandError("Attendance opens 15 minutes before the session starts.");
+    if (now > s.endsAt.getTime() + settings.attendanceEditWindowHours * HOUR) throw new CommandError(`Attendance closed ${settings.attendanceEditWindowHours} hours after the session. Ask the front desk.`);
+    return s;
+  }
+  throw new CommandError("You do not have permission to do that here.");
+}
+var resolvers = {
+  Query: {
+    async cancellationPreview(_, args, context) {
+      const actorId = context.session?.itemId;
+      if (!actorId) return null;
+      const prisma = context.sudo().prisma;
+      const booking = await prisma.booking.findFirst({ where: { id: args.bookingId, status: "booked", family: { guardians: { some: { id: actorId } } } } });
+      if (!booking) {
+        const staff2 = await prisma.booking.findUnique({ where: { id: args.bookingId } });
+        if (!staff2 || !context.session?.data?.role?.canManageSchedule || staff2.status !== "booked") return null;
+        return previewCancel(prisma, staff2, Boolean(args.excused));
+      }
+      return previewCancel(prisma, booking, Boolean(args.excused));
+    }
+  },
+  Mutation: {
+    bookSession: (_, args, context) => runCommand(context, { name: "bookSession", input: { s: args.sessionId, st: args.studentId }, idempotencyKey: keyOf(args), conflictMessage: "That student is already booked on this session." }, async (tx, actor) => {
+      const student = await tx.student.findUnique({ where: { id: String(args.studentId) }, select: { familyId: true } });
+      await requireGuardianOf(tx, actor, student?.familyId);
+      const settings = await getSettings(tx);
+      const s = await sessionLocation(tx, String(args.sessionId));
+      if (s.startsAt.getTime() > Date.now() + settings.bookingHorizonDays * DAY) throw new CommandError(`Sessions can be booked up to ${settings.bookingHorizonDays} days ahead.`);
+      const r = await bookSeat(tx, actor, { sessionId: s.id, studentId: String(args.studentId), source: "self_booked", whenFull: "reject" });
+      return { id: r.kind === "booked" ? r.bookingId : r.waitlistEntryId, data: r };
+    }),
+    staffBookSession: (_, args, context) => runCommand(context, { name: "staffBookSession", input: { s: args.sessionId, st: args.studentId, w: args.whenFull }, idempotencyKey: keyOf(args), conflictMessage: "That student is already booked on this session." }, async (tx, actor) => {
+      const s = await sessionLocation(tx, String(args.sessionId));
+      requireFlag(actor, "canManageSchedule", s.locationId);
+      const r = await bookSeat(tx, actor, { sessionId: s.id, studentId: String(args.studentId), source: "staff", whenFull: args.whenFull === "waitlist" ? "waitlist" : "reject" });
+      return { id: r.kind === "booked" ? r.bookingId : r.waitlistEntryId, data: r };
+    }),
+    cancelBooking: (_, args, context) => runCommand(context, { name: "cancelBooking", input: { b: args.bookingId, e: Boolean(args.excused) }, idempotencyKey: keyOf(args) }, async (tx, actor) => {
+      const booking = await tx.booking.findUnique({ where: { id: String(args.bookingId) }, select: { id: true, familyId: true, sessionId: true } });
+      if (!booking) throw new CommandError("That booking was not found.");
+      const s = await sessionLocation(tx, booking.sessionId);
+      if (!canAt(actor, "canManageSchedule", s.locationId)) await requireGuardianOf(tx, actor, booking.familyId);
+      const r = await cancelSeat(tx, actor, booking.id, { excused: Boolean(args.excused), reason: optionalString(args.reason, 500) });
+      return { id: booking.id, data: r };
+    }),
+    rescheduleBooking: (_, args, context) => runCommand(context, { name: "rescheduleBooking", input: { b: args.bookingId, n: args.newSessionId }, idempotencyKey: keyOf(args) }, async (tx, actor) => {
+      const booking = await tx.booking.findUnique({ where: { id: String(args.bookingId) }, select: { id: true, familyId: true, sessionId: true, studentId: true, startsAt: true, status: true } });
+      if (!booking || booking.status !== "booked") throw new CommandError("Only an upcoming booking can be moved.");
+      const s = await sessionLocation(tx, booking.sessionId);
+      const staff2 = canAt(actor, "canManageSchedule", s.locationId);
+      if (!staff2) await requireGuardianOf(tx, actor, booking.familyId);
+      const settings = await getSettings(tx);
+      if (!staff2 && booking.startsAt.getTime() - Date.now() < settings.cancellationWindowHours * HOUR) throw new CommandError(`Sessions can be moved up to ${settings.cancellationWindowHours} hours before they start. Inside that, cancel instead.`);
+      const target = await sessionLocation(tx, String(args.newSessionId));
+      if (target.id === s.id) throw new CommandError("Pick a different session.");
+      if (target.programId !== s.programId) throw new CommandError("A booking can only move to a session of the same programme.");
+      for (const id of [s.id, target.id].sort()) await lockSession(tx, id);
+      await tx.booking.updateMany({ where: { id: booking.id, status: "booked" }, data: { status: "cancelled_early", activeKey: null, cancelledAt: /* @__PURE__ */ new Date(), cancelledById: actor.userId, lateReason: "rescheduled" } });
+      await recordChange(tx, { type: "Booking", id: booking.id, from: "booked", to: "cancelled_early", actorId: actor.userId, reason: "rescheduled", data: { to: target.id } });
+      await releaseHold(tx, booking.id, actor.userId, "rescheduled");
+      const r = await bookSeat(tx, actor, { sessionId: target.id, studentId: booking.studentId, source: staff2 ? "staff" : "self_booked", whenFull: "reject" });
+      await promoteWaitlist(tx, s.id);
+      return { id: r.kind === "booked" ? r.bookingId : null, data: { from: booking.id, ...r } };
+    }),
+    joinWaitlist: (_, args, context) => runCommand(context, { name: "joinWaitlist", input: { s: args.sessionId, st: args.studentId }, idempotencyKey: keyOf(args) }, async (tx, actor) => {
+      const student = await tx.student.findUnique({ where: { id: String(args.studentId) }, select: { familyId: true } });
+      const s = await sessionLocation(tx, String(args.sessionId));
+      if (!canAt(actor, "canManageSchedule", s.locationId)) await requireGuardianOf(tx, actor, student?.familyId);
+      await lockSession(tx, s.id);
+      if (!["scheduled", "needs_cover"].includes(s.status) || s.startsAt.getTime() <= Date.now()) throw new CommandError("That session is not open.");
+      const r = await joinWaitlistInTx(tx, actor, s.id, String(args.studentId), student.familyId);
+      return { id: r.kind === "waitlisted" ? r.waitlistEntryId : null, data: r };
+    }),
+    leaveWaitlist: (_, args, context) => runCommand(context, { name: "leaveWaitlist", input: { w: args.waitlistEntryId }, idempotencyKey: keyOf(args) }, async (tx, actor) => {
+      const w = await tx.waitlistEntry.findUnique({ where: { id: String(args.waitlistEntryId) }, select: { id: true, familyId: true, sessionId: true } });
+      if (!w) throw new CommandError("That waitlist place was not found.");
+      const s = await sessionLocation(tx, w.sessionId);
+      if (!canAt(actor, "canManageSchedule", s.locationId)) await requireGuardianOf(tx, actor, w.familyId);
+      await transition(tx, actor, "waitlistEntry", "WaitlistEntry", w.id, "waiting", "cancelled", { activeKey: null });
+      return { id: w.id };
+    }),
+    markAttendance: (_, args, context) => runCommand(context, { name: "markAttendance", input: { b: args.bookingId, o: args.outcome }, idempotencyKey: keyOf(args) }, async (tx, actor) => {
+      if (!ATTENDANCE_OUTCOMES.includes(args.outcome)) throw new CommandError("Choose attended, late, no show or late cancel.");
+      const booking = await tx.booking.findUnique({ where: { id: String(args.bookingId) }, select: { id: true, sessionId: true } });
+      if (!booking) throw new CommandError("That booking was not found.");
+      await assertMayMark(tx, actor, booking);
+      await markSeat(tx, actor, booking.id, args.outcome);
+      return { id: booking.id, data: { status: args.outcome } };
+    }),
+    reopenBooking: (_, args, context) => runCommand(context, { name: "reopenBooking", input: { b: args.bookingId, c: args.correctedStatus ?? null, r: args.reason }, idempotencyKey: keyOf(args) }, async (tx, actor) => {
+      const booking = await tx.booking.findUnique({ where: { id: String(args.bookingId) }, select: { id: true, sessionId: true } });
+      if (!booking) throw new CommandError("That booking was not found.");
+      const s = await sessionLocation(tx, booking.sessionId);
+      if (!canAt(actor, "canManagePayroll", s.locationId)) throw new CommandError("Only a manager can reopen a marked booking.");
+      const r = await reopenSeat(tx, actor, booking.id, args.correctedStatus ?? null, requireString(args.reason, "A reason", 500));
+      if (!r.reopened) return { id: booking.id, data: r, refusal: "Pay for this session is already in an approved payroll run, so it cannot be reopened. An adjustment line was added to the next run instead." };
+      return { id: booking.id, data: r };
+    }),
+    createSessionSeries: (_, args, context) => runCommand(context, { name: "createSessionSeries", input: args.data, idempotencyKey: keyOf(args) }, async (tx, actor) => {
+      const d = args.data || {};
+      const locationId = d.locationId ? String(d.locationId) : null;
+      requireFlag(actor, "canManageSchedule", locationId);
+      const program = await tx.program.findUnique({ where: { id: requireString(d.programId, "Programme") }, select: { id: true, sessionMinutes: true, maxStudentsPerSession: true, format: true } });
+      if (!program) throw new CommandError("That programme was not found.");
+      const weekday = requireInt(d.weekday, "Weekday", 0, 6);
+      const startMinute = requireInt(d.startMinute, "Start time", 0, 1439);
+      const minutes = d.minutes ? requireInt(d.minutes, "Length", 15, 600) : program.sessionMinutes;
+      const capacity = program.format === "one_to_one" ? 1 : d.capacity ? requireInt(d.capacity, "Capacity", 1, 200) : program.maxStudentsPerSession;
+      if (d.roomId) {
+        const room = await tx.room.findUnique({ where: { id: String(d.roomId) }, select: { capacity: true, locationId: true } });
+        if (!room || room.locationId !== locationId) throw new CommandError("That room is not at this location.");
+        if (capacity > room.capacity) throw new CommandError(`That room seats ${room.capacity}.`);
+      }
+      const startDate = requireDate(d.startDate, "Start date");
+      const series = await tx.sessionSeries.create({
+        data: {
+          program: { connect: { id: program.id } },
+          ...d.subjectId ? { subject: { connect: { id: String(d.subjectId) } } } : {},
+          ...locationId ? { location: { connect: { id: locationId } } } : {},
+          ...d.roomId ? { room: { connect: { id: String(d.roomId) } } } : {},
+          ...d.tutorId ? { tutor: { connect: { id: String(d.tutorId) } } } : {},
+          ...d.enrollmentId ? { enrollment: { connect: { id: String(d.enrollmentId) } } } : {},
+          mode: d.mode || "in_centre",
+          weekday,
+          startMinute,
+          minutes,
+          capacity,
+          startDate,
+          endDate: d.endDate ? requireDate(d.endDate, "End date") : null,
+          meetingUrl: optionalString(d.meetingUrl, 500),
+          status: "active",
+          createdBy: { connect: { id: actor.userId } }
+        }
+      });
+      await recordChange(tx, { type: "SessionSeries", id: series.id, to: "active", actorId: actor.userId });
+      const weeks = d.weeks ? requireInt(d.weeks, "Weeks", 1, 26) : 4;
+      const generated = await generateSessions(tx, series.id, new Date(Date.now() + weeks * 7 * DAY));
+      return { id: series.id, data: { generated } };
+    }),
+    ensureSessionsGenerated: (_, args, context) => runCommand(context, { name: "ensureSessionsGenerated", input: { s: args.seriesId ?? null, w: args.weeks ?? null }, idempotencyKey: keyOf(args) }, async (tx, actor) => {
+      requireFlag(actor, "canManageSchedule");
+      const settings = await getSettings(tx);
+      const through = new Date(Date.now() + (args.weeks ? requireInt(args.weeks, "Weeks", 1, 26) * 7 : settings.bookingHorizonDays) * DAY);
+      const series = await tx.sessionSeries.findMany({ where: { status: "active", ...args.seriesId ? { id: String(args.seriesId) } : {} }, select: { id: true, locationId: true } });
+      let generated = 0;
+      for (const s of series) if (canAt(actor, "canManageSchedule", s.locationId)) generated += await generateSessions(tx, s.id, through);
+      return { id: null, data: { generated, series: series.length } };
+    }),
+    cancelSession: (_, args, context) => runCommand(context, { name: "cancelSession", input: { s: args.sessionId, r: args.reason }, idempotencyKey: keyOf(args) }, async (tx, actor) => {
+      const reasons = ["tutor_absent", "closure", "low_enrolment", "other"];
+      if (!reasons.includes(args.reason)) throw new CommandError("Choose a reason: tutor absent, closure, low enrolment or other.");
+      const s = await sessionLocation(tx, String(args.sessionId));
+      requireFlag(actor, "canManageSchedule", s.locationId);
+      await lockSession(tx, s.id);
+      await transition(tx, actor, "session", "Session", s.id, ["scheduled", "needs_cover", "in_progress"], "cancelled", { cancelReason: `${args.reason}${args.note ? `: ${optionalString(args.note, 300)}` : ""}` }, args.reason);
+      const bookings = await tx.booking.findMany({ where: { sessionId: s.id, status: "booked" }, select: { id: true } });
+      for (const b of bookings) await cancelSeat(tx, actor, b.id, { byCentre: true, reason: args.reason });
+      const voided = await voidSessionPay(tx, s.id, `Session cancelled: ${args.reason}`);
+      await tx.waitlistEntry.updateMany({ where: { sessionId: s.id, status: "waiting" }, data: { status: "cancelled", activeKey: null } });
+      return { id: s.id, data: { bookingsCancelled: bookings.length, payLinesVoided: voided } };
+    }),
+    markSessionNeedsCover: (_, args, context) => runCommand(context, { name: "markSessionNeedsCover", input: { s: args.sessionId }, idempotencyKey: keyOf(args) }, async (tx, actor) => {
+      const s = await sessionLocation(tx, String(args.sessionId));
+      requireFlag(actor, "canManageSchedule", s.locationId);
+      await transition(tx, actor, "session", "Session", s.id, "scheduled", "needs_cover");
+      return { id: s.id };
+    }),
+    assignSubstitute: (_, args, context) => runCommand(context, { name: "assignSubstitute", input: { s: args.sessionId, t: args.tutorId }, idempotencyKey: keyOf(args) }, async (tx, actor) => {
+      const s = await sessionLocation(tx, String(args.sessionId));
+      requireFlag(actor, "canManageSchedule", s.locationId);
+      const tutor = await tx.tutor.findUnique({ where: { id: String(args.tutorId) }, select: { id: true, status: true } });
+      if (!tutor || tutor.status !== "active") throw new CommandError("That tutor is not active.");
+      if (tutor.id === s.tutorId) throw new CommandError("That tutor is already on this session.");
+      await assertTutorFree(tx, tutor.id, s.startsAt, s.endsAt, s.id);
+      await lockSession(tx, s.id);
+      if (!["scheduled", "needs_cover"].includes(s.status)) throw new CommandError("Only an upcoming session can get a substitute.");
+      const r = await tx.session.updateMany({ where: { id: s.id, status: s.status }, data: { tutorId: tutor.id, substituteForId: s.tutorId, status: "scheduled" } });
+      if (r.count !== 1) throw new CommandError("This session was changed by someone else. Reload and try again.");
+      await recordChange(tx, { type: "Session", id: s.id, from: s.status, to: "scheduled", actorId: actor.userId, reason: "substitute", data: { from: s.tutorId, to: tutor.id } });
+      await voidSessionPay(tx, s.id, "Substitute assigned");
+      return { id: s.id };
+    })
+  }
+};
+
 // features/keystone/mutations/index.ts
 var graphql5 = String.raw;
+var COMMAND_OVERRIDES = /* @__PURE__ */ new Set(["createSessionSeries", "createPayrollRun", "createTutorApplication", "updateStudent"]);
+var modules = [schedule_exports];
 function extendGraphqlSchema(baseSchema) {
   return (0, import_schema.mergeSchemas)({
     schemas: [baseSchema],
-    typeDefs: graphql5`
-      type Query {
-        redirectToInit: Boolean
-      }
-    `,
-    resolvers: {
-      Query: {
-        redirectToInit: redirectToInit_default
-      }
-    }
+    typeDefs: [
+      graphql5`
+        type Query {
+          redirectToInit: Boolean
+        }
+      `,
+      ...modules.map((m) => m.typeDefs)
+    ],
+    onFieldTypeConflict: (existing, incoming, type) => {
+      if (type?.name?.value === "Mutation" && COMMAND_OVERRIDES.has(incoming?.name?.value)) return incoming;
+      throw new Error(`GraphQL field clash: ${type?.name?.value}.${incoming?.name?.value}`);
+    },
+    resolvers: [
+      { Query: { redirectToInit: redirectToInit_default } },
+      ...modules.map((m) => m.resolvers)
+    ]
   });
 }
 

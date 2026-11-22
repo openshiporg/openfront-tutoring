@@ -91,7 +91,7 @@ export type CommandOptions = {
  * Runs `fn` in one transaction with idempotency. `fn` returns `{ id, data }`.
  * After-commit work (emails, provider calls) goes in `after`, which runs only on first execution.
  */
-export async function runCommand<T extends { id?: string | null; data?: unknown; after?: () => Promise<void> }>(
+export async function runCommand<T extends { id?: string | null; data?: unknown; after?: () => Promise<void>; refusal?: string }>(
   context: any,
   options: CommandOptions,
   fn: (tx: Tx, actor: Actor | null) => Promise<T>,
@@ -117,7 +117,8 @@ export async function runCommand<T extends { id?: string | null; data?: unknown;
         }
       }
       const value = await fn(tx, actor)
-      const result: CommandResult = { success: true, error: null, id: value.id ?? null, data: (value.data ?? null) as any }
+      // `refusal`: the request was refused but the transaction's other writes stand (e.g. a payroll adjustment line).
+      const result: CommandResult = { success: !value.refusal, error: value.refusal ?? null, id: value.id ?? null, data: (value.data ?? null) as any }
       if (key) {
         await tx.commandReceipt.create({
           data: {
