@@ -8098,6 +8098,16 @@ type Query {
   myCredits: JSON
   myInvoices: JSON
   myInvoice(id: ID!): JSON
+
+  """
+  Owner/manager reports for [from, to). Requires canViewReports; locationId must be one of the actor's.
+  """
+  platformReports(from: String!, to: String!, locationId: ID): JSON
+
+  """
+  Everything the family page shows, in one call. Requires canManageFamilies at the family's location.
+  """
+  platformFamily(id: ID!): JSON
   cancellationPreview(bookingId: ID!, excused: Boolean): CancellationPreview
   membershipPlanChangePreview(membershipId: ID!, planId: ID!): JSON
   matchingCandidates(enrollmentId: ID!): JSON
