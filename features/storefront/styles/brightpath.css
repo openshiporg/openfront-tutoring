@@ -393,3 +393,9 @@ fieldset.bp-fieldset { border: 0; padding: 0; margin: 0; display: grid; gap: 10p
   .bp-session { grid-template-columns: 1fr; }
   .bp-session-actions { justify-content: flex-start; }
 }
+
+/* Account edit forms (A2) */
+.bp-inline-panel.bp-form { display: grid; gap: 12px; }
+.bp-inline-panel .bp-row > .bp-field { flex: 1 1 180px; min-width: 0; }
+.bp-fieldset { border: 1px solid var(--bp-line, #dcdcdc); border-radius: 8px; padding: 12px; display: grid; gap: 10px; }
+.bp-fieldset legend { padding: 0 6px; font-weight: 600; }

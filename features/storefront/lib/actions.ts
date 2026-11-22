@@ -249,3 +249,62 @@ export async function previewCancellationAction(bookingId: string, excused: bool
   const r = await gql<{ cancellationPreview: any }>('query($id:ID!,$e:Boolean){ cancellationPreview(bookingId:$id, excused:$e) { outcome hoursBefore windowHours creditReturned makeUpGranted makeUpExpiresAt excusedLeftThisMonth message } }', { id: bookingId, e: excused })
   return { value: r.data?.cancellationPreview ?? null, error: r.error }
 }
+
+// ---------------------------------------------------------------- family profile and children (A2)
+export async function updateFamilyProfileAction(_: ActionState, f: FormData): Promise<ActionState> {
+  const data: Record<string, string> = {}
+  for (const k of ['guardianName', 'guardianPhone', 'billingEmail', 'phone', 'addressLine1', 'addressLine2', 'city', 'region', 'postalCode', 'secondGuardianName', 'secondGuardianEmail', 'secondGuardianPhone']) if (f.has(k)) data[k] = str(f, k)
+  if (!data.guardianName) return { ok: false, error: 'Enter your name.' }
+  if (!data.billingEmail) return { ok: false, error: 'A billing email is needed.' }
+  const r = await command('updateFamilyProfile', `mutation($d: JSON!, $k: String) { updateFamilyProfile(data: $d, idempotencyKey: $k) { ${CR} } }`, { d: data, k: key(f) })
+  if (!r.success) return { ok: false, error: r.error }
+  revalidatePath('/account', 'layout')
+  return { ok: true, error: null, data: r.data }
+}
+
+function studentFields(f: FormData) {
+  const d: Record<string, unknown> = {}
+  for (const k of ['firstName', 'lastName', 'school', 'dateOfBirth', 'levelId', 'learningNotes', 'medicalNotes']) if (f.has(k)) d[k] = str(f, k)
+  if (d.dateOfBirth === '') d.dateOfBirth = null
+  if (d.levelId === '') d.levelId = null
+  const names = f.getAll('pickupName').map(String)
+  if (f.has('pickupName')) {
+    d.pickupPeople = names.map((name, i) => ({ name: name.trim(), relation: String(f.getAll('pickupRelation')[i] ?? '').trim(), phone: String(f.getAll('pickupPhone')[i] ?? '').trim() })).filter((p) => p.name)
+  }
+  return d
+}
+
+export async function addStudentAction(_: ActionState, f: FormData): Promise<ActionState> {
+  const d = studentFields(f)
+  if (!d.firstName) return { ok: false, error: 'Enter the first name.' }
+  const r = await command('addStudent', `mutation($d: JSON!, $k: String) { addStudent(data: $d, idempotencyKey: $k) { ${CR} } }`, { d, k: key(f) })
+  if (!r.success) return { ok: false, error: r.error }
+  revalidatePath('/account', 'layout')
+  return { ok: true, error: null, data: r.data }
+}
+
+export async function updateStudentAction(_: ActionState, f: FormData): Promise<ActionState> {
+  const d = studentFields(f)
+  if (!d.firstName) return { ok: false, error: 'Enter the first name.' }
+  const r = await command('updateStudent', `mutation($s: ID!, $d: JSON!, $k: String) { updateStudent(studentId: $s, data: $d, idempotencyKey: $k) { ${CR} } }`, { s: str(f, 'studentId'), d, k: key(f) })
+  if (!r.success) return { ok: false, error: r.error }
+  revalidatePath('/account', 'layout')
+  return { ok: true, error: null, data: r.data }
+}
+
+// ---------------------------------------------------------------- matched tutor: keep or change (A15)
+export async function confirmTutorAction(_: ActionState, f: FormData): Promise<ActionState> {
+  const r = await command('confirmTutor', `mutation($e: ID!, $k: String) { confirmTutor(enrollmentId: $e, idempotencyKey: $k) { ${CR} } }`, { e: str(f, 'enrollmentId'), k: key(f) })
+  if (!r.success) return { ok: false, error: r.error }
+  revalidatePath('/account', 'layout')
+  return { ok: true, error: null, data: r.data }
+}
+
+export async function requestRematchAction(_: ActionState, f: FormData): Promise<ActionState> {
+  const reason = str(f, 'reason')
+  if (!reason) return { ok: false, error: 'Tell us briefly what was not right, so the next match is better.' }
+  const r = await command('requestRematch', `mutation($e: ID!, $r: String!, $k: String) { requestRematch(enrollmentId: $e, reason: $r, idempotencyKey: $k) { ${CR} } }`, { e: str(f, 'enrollmentId'), r: reason, k: key(f) })
+  if (!r.success) return { ok: false, error: r.error }
+  revalidatePath('/account', 'layout')
+  return { ok: true, error: null, data: r.data }
+}

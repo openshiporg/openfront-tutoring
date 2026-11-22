@@ -469,6 +469,7 @@ export const resolvers = {
         prisma.businessSettings.findUnique({ where: { id: 1 } }),
       ])
       if (!family) return { ...base, family: null }
+      const levels = await prisma.level.findMany({ orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }], select: { id: true, name: true } })
       const lowBalance = settings?.lowBalanceMinutes ?? 120
       const perStudent = new Map<string, number>()
       grants.forEach((g: any) => { if (!g.unlimited && g.studentId) perStudent.set(g.studentId, (perStudent.get(g.studentId) ?? 0) + (g.minutesAvailable ?? 0)) })
@@ -487,10 +488,11 @@ export const resolvers = {
         family: {
           id: family.id, name: family.name, billingEmail: family.billingEmail, phone: family.phone,
           addressLine1: family.addressLine1, addressLine2: family.addressLine2, city: family.city, region: family.region, postalCode: family.postalCode, country: family.country,
+          secondGuardianName: family.secondGuardianName, secondGuardianEmail: family.secondGuardianEmail, secondGuardianPhone: family.secondGuardianPhone,
           primaryLocation: family.primaryLocation, cardLabel: family.defaultPaymentMethodLabel || null,
           students: family.students.map((s: any) => ({
             id: s.id, firstName: s.firstName, lastName: s.lastName, school: s.school, status: s.status,
-            dateOfBirth: s.dateOfBirth, learningNotes: s.learningNotes, medicalNotes: s.medicalNotes,
+            dateOfBirth: s.dateOfBirth, learningNotes: s.learningNotes, medicalNotes: s.medicalNotes, pickupPeople: Array.isArray(s.pickupPeople) ? s.pickupPeople : [],
             level: s.level ? { id: s.level.id, name: s.level.name } : null,
             minutesAvailable: perStudent.get(s.id) ?? 0,
             enrolments: s.enrolments.map((e: any) => ({ id: e.id, status: e.status, mode: e.mode, fundingType: e.fundingType, program: e.program, tutor: e.tutor ? { id: e.tutor.id, displayName: e.tutor.displayName, slug: e.tutor.publicProfile ? e.tutor.slug : null } : null, trialAttendedAt: e.trialAttendedAt, tutorConfirmedAt: e.tutorConfirmedAt, rematchCount: e.rematchCount })),
@@ -500,7 +502,8 @@ export const resolvers = {
           assessments: assessments.map((a: any) => ({ id: a.id, scheduledAt: a.scheduledAt, minutes: a.minutes, mode: a.mode, program: a.program, location: a.location, student: a.student })),
           alerts,
         },
-        settings: { pauseMinDays: settings?.pauseMinDays ?? 14, pauseMaxDays: settings?.pauseMaxDays ?? 28, membershipCancelNoticeDays: settings?.membershipCancelNoticeDays ?? 30, pausesPerYear: settings?.pausesPerYear ?? 1 },
+        settings: { pauseMinDays: settings?.pauseMinDays ?? 14, pauseMaxDays: settings?.pauseMaxDays ?? 28, membershipCancelNoticeDays: settings?.membershipCancelNoticeDays ?? 30, pausesPerYear: settings?.pausesPerYear ?? 1, freeRematches: settings?.freeRematches ?? 1 },
+        levels,
       }
     },
 

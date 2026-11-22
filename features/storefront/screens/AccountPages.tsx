@@ -1,3 +1,4 @@
+import { AddStudent, EditStudent, FamilyProfileForm, TutorDecision } from '../components/FamilyForms'
 import Link from 'next/link'
 import { notFound, redirect } from 'next/navigation'
 import { getBusiness, getCancellationPreview, getMyBooking, getMyBookings, getMyCredits, getMyFamily, getMyInvoice, getMyInvoices, getMyStudent, getOpenSessions, getViewer } from '../lib/data'
@@ -98,6 +99,7 @@ export async function AccountOverviewPage() {
                       <p className="bp-small bp-muted">{[s.level?.name, s.school].filter(Boolean).join(' · ') || ' '}</p>
                       <p className="bp-small">{hoursFromMinutes(s.minutesAvailable)} of credit</p>
                       {s.enrolments.length ? <ul>{s.enrolments.map((e: any) => <li key={e.id}>{e.program?.name}: {statusText(e.status)}{e.tutor ? `, ${e.tutor.displayName}` : ''}</li>)}</ul> : <p className="bp-small bp-muted">Not enrolled yet.</p>}
+                      {s.enrolments.filter((e: any) => e.status === 'matched' && e.tutor).map((e: any) => <TutorDecision key={`td-${e.id}`} enrollmentId={e.id} tutorName={e.tutor.displayName} rematchCount={e.rematchCount ?? 0} freeRematches={fam.settings?.freeRematches ?? 1} trialDone={Boolean(e.trialAttendedAt)} />)}
                       <Link className="bp-btn is-small" href={`/account/progress?student=${s.id}`}>Progress</Link>
                     </div>
                   ))}
@@ -535,13 +537,27 @@ export async function AccountProfilePage() {
               <h2>Family</h2>
               <dl className="bp-dl">
                 <dt>Name</dt><dd>{f.name}</dd>
-                <dt>Signed in as</dt><dd>{viewer.name} ({viewer.email})</dd>
+                <dt>Signed in as</dt><dd>{viewer.name} ({viewer.email}){fam.user?.phone ? `, ${fam.user.phone}` : ''}</dd>
                 <dt>Billing email</dt><dd>{f.billingEmail || viewer.email}</dd>
                 {f.phone ? (<><dt>Phone</dt><dd>{f.phone}</dd></>) : null}
+                {f.addressLine1 ? (<><dt>Address</dt><dd>{[f.addressLine1, f.addressLine2, [f.city, f.region, f.postalCode].filter(Boolean).join(' ')].filter(Boolean).join(', ')}</dd></>) : null}
+                {f.secondGuardianName ? (<><dt>Second guardian</dt><dd>{[f.secondGuardianName, f.secondGuardianEmail, f.secondGuardianPhone].filter(Boolean).join(', ')}</dd></>) : null}
                 {f.primaryLocation ? (<><dt>Home centre</dt><dd>{f.primaryLocation.name}</dd></>) : null}
-                <dt>Students</dt><dd>{f.students.map((s: any) => `${s.firstName} ${s.lastName}`).join(', ') || 'None yet'}</dd>
               </dl>
-              <p className="bp-small bp-muted" style={{ marginTop: 12 }}>To change these details, <Link className="bp-accent" href="/contact">message us</Link>. <Link className="bp-accent" href="/account/reset">Change your password</Link>.</p>
+              <div style={{ marginTop: 12 }}><FamilyProfileForm family={f} guardian={{ name: fam.user?.name ?? viewer.name, phone: fam.user?.phone ?? null, email: viewer.email }} /></div>
+              <p className="bp-small bp-muted" style={{ marginTop: 12 }}><Link className="bp-accent" href="/account/reset">Change your password</Link>.</p>
+            </div>
+            <div className="bp-account-section">
+              <h2>Children</h2>
+              {f.students.map((st: any) => (
+                <div className="bp-panel" key={st.id} style={{ marginBottom: 12 }}>
+                  <h3>{st.firstName} {st.lastName}</h3>
+                  <p className="bp-small bp-muted">{[st.level?.name, st.school, st.dateOfBirth ? `born ${dateOnly(st.dateOfBirth)}` : ''].filter(Boolean).join(' · ') || 'No details yet'}</p>
+                  {st.pickupPeople?.length ? <p className="bp-small">Collected by: {st.pickupPeople.map((p: any) => [p.name, p.relation].filter(Boolean).join(', ')).join('; ')}</p> : null}
+                  <EditStudent student={st} levels={fam.levels ?? []} />
+                </div>
+              ))}
+              <AddStudent levels={fam.levels ?? []} />
             </div>
             <div className="bp-account-section">
               <h2>Card on file</h2>
