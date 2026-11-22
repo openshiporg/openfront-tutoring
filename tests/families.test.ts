@@ -37,8 +37,9 @@ test('guardian signs up, signs in with the password, adds and edits a student; d
   const dup = (await gql(ctx, null, `mutation($d: JSON!) { registerGuardian(data: $d) ${R} }`, { d: { name: 'Priya Again', email: email.toUpperCase(), password: 'another pass 9' } })).registerGuardian
   assert.equal(dup.success, false)
   assert.match(dup.error, /already has an account/)
-  const add = (await gql(ctx, u.id, `mutation($d: JSON!) { addStudent(data: $d) ${R} }`, { d: { firstName: 'Anya', lastName: 'Shah', school: 'Lincoln Middle', pickupPeople: [{ name: 'Raj Shah', relation: 'uncle' }] } })).addStudent
+  const add = (await gql(ctx, u.id, `mutation($d: JSON!) { addStudent(data: $d) ${R} }`, { d: { firstName: 'Anya', lastName: 'Shah', levelId: null, school: 'Lincoln Middle', pickupPeople: [{ name: 'Raj Shah', relation: 'uncle' }] } })).addStudent
   assert.equal(add.success, true, add.error)
+  assert.equal((await prisma.student.findUnique({ where: { id: add.id } })).levelId, null)
   const upd = (await gql(ctx, u.id, `mutation($s: ID!, $d: JSON!) { updateStudent(studentId: $s, data: $d) ${R} }`, { s: add.id, d: { learningNotes: 'Prefers diagrams', status: 'alumni' } })).updateStudent
   assert.equal(upd.success, true, upd.error)
   const s = await prisma.student.findUnique({ where: { id: add.id } })

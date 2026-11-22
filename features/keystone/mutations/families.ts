@@ -211,7 +211,8 @@ export const resolvers = {
         if (!f) throw new CommandError('Add your family details first.')
         familyId = f.id
       }
-      const data = studentData({ ...d, firstName: d.firstName ?? '' }, staff)
+      // A missing level on create is an absent relationship, not an update disconnect.
+      const data = studentData({ ...d, firstName: d.firstName ?? '', levelId: d.levelId || undefined }, staff)
       const s = await tx.student.create({ data: { ...data, family: { connect: { id: familyId } }, status: staff && d.status ? d.status : 'prospect', createdBy: { connect: { id: actor!.userId } } }, select: { id: true } })
       await recordChange(tx, { type: 'Student', id: s.id, to: 'prospect', actorId: actor!.userId, reason: staff ? 'added by staff' : 'added by guardian' })
       return { id: s.id, data: { studentId: s.id } }
