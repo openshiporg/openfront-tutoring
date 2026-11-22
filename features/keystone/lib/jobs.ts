@@ -91,6 +91,20 @@ export async function generateAll(prisma: any, now = new Date()) {
 }
 
 /** One run at a time (advisory lock); records lastDailyJobsAt. */
+/** §W9.4: expired credentials flip to expired; 30 days before, a task. An expired background check blocks offers. */
+export async function expireCredentials(prisma: any, now = new Date()) {
+  const expired = await prisma.tutorCredential.findMany({ where: { status: 'verified', expiresAt: { lte: now } }, select: { id: true } })
+  for (const c of expired) {
+    const r = await prisma.tutorCredential.updateMany({ where: { id: c.id, status: 'verified' }, data: { status: 'expired' } })
+    if (r.count === 1) await prisma.changeEvent.create({ data: { aggregateType: 'TutorCredential', aggregateId: c.id, from: 'verified', to: 'expired', reason: 'expiry date passed', data: {}, at: now } })
+  }
+  const soon = await prisma.tutorCredential.findMany({ where: { status: 'verified', expiresAt: { gt: now, lte: new Date(now.getTime() + 30 * DAY) } }, select: { id: true, kind: true, expiresAt: true, tutor: { select: { displayName: true } } } })
+  for (const c of soon) {
+    await prisma.task.upsert({ where: { openKey: `credential:${c.id}` }, create: { kind: 'credential_expiring', title: `${c.tutor?.displayName}: ${c.kind.replace(/_/g, ' ')} expires ${c.expiresAt.toISOString().slice(0, 10)}`, relatedType: 'TutorCredential', relatedId: c.id, dueAt: c.expiresAt, openKey: `credential:${c.id}` }, update: {} })
+  }
+  return { expired: expired.length, expiringSoon: soon.length }
+}
+
 export async function runDailyJobs(prisma: any, now = new Date()) {
   const started = Date.now()
   const steps: Record<string, unknown> = {}
@@ -109,9 +123,18 @@ export async function runDailyJobs(prisma: any, now = new Date()) {
     await step('credits', () => expireCredits(prisma, now))
     await step('tasks', () => raiseTasks(prisma, now))
     await step('offers', async () => {
-      const r = await prisma.offer.updateMany({ where: { status: 'sent', expiresAt: { lte: now } }, data: { status: 'expired', openKey: null } })
-      return { expired: r.count }
+      const due = await prisma.offer.findMany({ where: { status: 'sent', expiresAt: { lte: now } }, select: { id: true, enrollmentId: true } })
+      for (const o of due) {
+        const r = await prisma.offer.updateMany({ where: { id: o.id, status: 'sent' }, data: { status: 'expired', openKey: null, respondedAt: now, declineReason: 'expired' } })
+        if (r.count !== 1) continue
+        await prisma.changeEvent.create({ data: { aggregateType: 'Offer', aggregateId: o.id, from: 'sent', to: 'expired', reason: 'no answer in time', data: {}, at: now } })
+        await prisma.task.upsert({ where: { openKey: `offer-declined:${o.enrollmentId}` }, create: { kind: 'manual', title: 'Offer expired: send the next candidate', relatedType: 'Enrollment', relatedId: o.enrollmentId, dueAt: now, openKey: `offer-declined:${o.enrollmentId}` }, update: {} })
+      }
+      return { expired: due.length }
     })
+    await step('matches', async () => (await import('../mutations/tutors')).autoConfirmMatches(prisma, now))
+    await step('credentials', () => expireCredentials(prisma, now))
+    await step('progressReports', async () => (await import('../mutations/families')).draftDueProgressReports(prisma, now))
     await step('email', () => deliverQueued(prisma))
     await prisma.businessSettings.upsert({ where: { id: 1 }, create: { id: 1, lastDailyJobsAt: now }, update: { lastDailyJobsAt: now } })
   } finally {

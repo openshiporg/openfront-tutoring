@@ -7830,6 +7830,38 @@ type Mutation {
   grantGoodwillCredit(familyId: ID!, studentId: ID, programId: ID, minutes: Int!, expiresInDays: Int, reason: String!, idempotencyKey: String): CommandResult!
   runDailyJobs: CommandResult!
   rotateJobsSecret: CommandResult!
+  registerGuardian(data: JSON!, idempotencyKey: String): CommandResult!
+  addStudent(data: JSON!, idempotencyKey: String): CommandResult!
+  updateStudent(studentId: ID!, data: JSON!, idempotencyKey: String): CommandResult!
+  updateFamilyProfile(familyId: ID, data: JSON!, idempotencyKey: String): CommandResult!
+  acceptLearningPlan(planId: ID!, idempotencyKey: String): CommandResult!
+  declineLearningPlan(planId: ID!, reason: String, idempotencyKey: String): CommandResult!
+  acknowledgeProgressReport(reportId: ID!): CommandResult!
+  markSessionReportSeen(reportId: ID!): CommandResult!
+  proposeLearningPlan(planId: ID, data: JSON, idempotencyKey: String): CommandResult!
+  setGoalStatus(goalId: ID!, status: String!, idempotencyKey: String): CommandResult!
+  publishSessionReport(bookingId: ID!, data: JSON!, idempotencyKey: String): CommandResult!
+  setHomeworkStatus(reportId: ID!, status: String!): CommandResult!
+  draftProgressReport(enrollmentId: ID!, idempotencyKey: String): CommandResult!
+  publishProgressReport(reportId: ID!, data: JSON, idempotencyKey: String): CommandResult!
+  withdrawProgressReport(reportId: ID!, reason: String!, idempotencyKey: String): CommandResult!
+  logFamilyContact(familyId: ID!, data: JSON!, idempotencyKey: String): CommandResult!
+  recordReview(familyId: ID!, data: JSON!, idempotencyKey: String): CommandResult!
+  moderateReview(reviewId: ID!, status: String!, idempotencyKey: String): CommandResult!
+  completeTask(taskId: ID!, outcome: String!, dismiss: Boolean, idempotencyKey: String): CommandResult!
+  sendOffer(enrollmentId: ID!, tutorId: ID!, slots: JSON, idempotencyKey: String): CommandResult!
+  withdrawOffer(offerId: ID!, reason: String, idempotencyKey: String): CommandResult!
+  respondToOffer(offerId: ID!, accept: Boolean!, reason: String, idempotencyKey: String): CommandResult!
+  confirmTutor(enrollmentId: ID!, idempotencyKey: String): CommandResult!
+  requestRematch(enrollmentId: ID!, reason: String!, idempotencyKey: String): CommandResult!
+  createEnrolmentForFamily(data: JSON!, idempotencyKey: String): CommandResult!
+  setTutorStatus(tutorId: ID!, status: String!, reason: String, coverSessions: Boolean, idempotencyKey: String): CommandResult!
+  verifyCredential(credentialId: ID!, decision: String!, expiresAt: String, idempotencyKey: String): CommandResult!
+  requestTimeOff(startsAt: String!, endsAt: String!, reason: String, idempotencyKey: String): CommandResult!
+  decideTimeOff(timeOffId: ID!, approve: Boolean!, idempotencyKey: String): CommandResult!
+  createTutorApplication(data: JSON!, idempotencyKey: String): CommandResult!
+  transitionApplication(applicationId: ID!, status: String!, note: String, idempotencyKey: String): CommandResult!
+  approveApplication(applicationId: ID!, data: JSON, idempotencyKey: String): CommandResult!
 }
 
 union UserAuthenticationWithPasswordResult = UserAuthenticationWithPasswordSuccess | UserAuthenticationWithPasswordFailure
@@ -8062,6 +8094,8 @@ type Query {
   myInvoice(id: ID!): JSON
   cancellationPreview(bookingId: ID!, excused: Boolean): CancellationPreview
   membershipPlanChangePreview(membershipId: ID!, planId: ID!): JSON
+  matchingCandidates(enrollmentId: ID!): JSON
+  myOffers: JSON
 }
 
 union AuthenticatedItem = User

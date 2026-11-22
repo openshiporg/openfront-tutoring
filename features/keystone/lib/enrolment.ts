@@ -214,7 +214,7 @@ registerFulfilment('enrolment', async (tx, invoice, f) => {
 export async function bookFixedSeats(tx: Tx, enrollmentId: string, from: Date, through: Date) {
   const e = await tx.enrollment.findUnique({ where: { id: enrollmentId }, select: { id: true, studentId: true, familyId: true, status: true, preferredTimes: true } })
   const seriesIds: string[] = Array.isArray((e?.preferredTimes as any)?.seriesIds) ? (e.preferredTimes as any).seriesIds : []
-  if (!e || !seriesIds.length || e.status !== 'active') return { booked: 0, missed: 0 }
+  if (!e || !seriesIds.length || !['active', 'matched'].includes(e.status)) return { booked: 0, missed: 0 }
   let booked = 0
   const missed: string[] = []
   for (const seriesId of seriesIds) {
