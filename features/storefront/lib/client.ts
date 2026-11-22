@@ -6,8 +6,19 @@ import { cookies } from 'next/headers'
  * Always this same server over loopback: the cookie never follows a request Host header.
  */
 async function endpoint() {
-  const port = /^\d{1,5}$/.test(process.env.PORT || '') ? process.env.PORT : '3000'
-  return `http://127.0.0.1:${port}/api/graphql`
+  // Railway and `next start` with PORT set: this server's own port. A port only ever reaches 127.0.0.1.
+  if (/^\d{1,5}$/.test(process.env.PORT || '')) return `http://127.0.0.1:${process.env.PORT}/api/graphql`
+  // PORT unset (e.g. `next start -p 3217` locally): use the port this request came in on, but only when it
+  // came in on localhost, so a forged Host header can never point the session cookie at another place.
+  try {
+    const { headers } = await import('next/headers')
+    const host = (await headers()).get('host') || ''
+    const m = host.match(/^(?:localhost|127\.0\.0\.1|\[::1\]):(\d{1,5})$/)
+    if (m) return `http://127.0.0.1:${m[1]}/api/graphql`
+  } catch {
+    // Outside a request (build, sitemap prerender): fall through.
+  }
+  return 'http://127.0.0.1:3000/api/graphql'
 }
 
 /**
@@ -45,18 +56,22 @@ export async function gql<T = any>(query: string, variables: Record<string, unkn
     })
     await forwardSession(res)
     const json = await res.json().catch(() => null)
-    if (!json) return { data: null, error: GENERIC }
+    if (!json) { console.error(`[storefront] ${opName(query)}: HTTP ${res.status} with no JSON body`); return { data: null, error: GENERIC } }
     if (json.errors?.length) {
       const message = String(json.errors[0]?.message || '')
+      console.error(`[storefront] ${opName(query)}: ${message.slice(0, 300)}`)
       // Field-not-found means the operation is not deployed on this server yet.
       if (/Cannot query field|Unknown argument|Unknown type/.test(message)) return { data: json.data ?? null, error: 'This step is not available yet. Please call or email us and we will take care of it.' }
       return { data: json.data ?? null, error: message.length < 240 && !/prisma|invalid `|stack/i.test(message) ? message : GENERIC }
     }
     return { data: json.data as T, error: null }
-  } catch {
+  } catch (err) {
+    console.error(`[storefront] ${opName(query)}: ${String((err as any)?.cause?.code || (err as any)?.message || err).slice(0, 200)}`)
     return { data: null, error: GENERIC }
   }
 }
+
+const opName = (q: string) => q.match(/\{\s*(\w+)/)?.[1] ?? 'query'
 
 /** A §5.9 command: { success, error, id, data }. */
 export type Command<D = Record<string, any>> = { success: boolean; error: string | null; id: string | null; data: D | null }
