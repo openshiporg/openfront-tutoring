@@ -108,7 +108,16 @@ export async function removeClosure(locationId: string, id: string) {
 export async function addMemberAction(form: FormData) {
   const locationId = s(form, 'locationId')
   if (!s(form, 'userId')) return { success: false, error: 'Pick the staff member.' }
-  const d = { location: { connect: { id: locationId } }, user: { connect: { id: s(form, 'userId') } }, role: s(form, 'role') || 'front_desk', status: 'active' }
+  const userId = s(form, 'userId')
+  const existing = await gql<{ locationMemberships: Array<{ id: string }> }>(`
+    query($location: ID!, $user: ID!) {
+      locationMemberships(where: { location: { id: { equals: $location } }, user: { id: { equals: $user } } }, take: 1) { id }
+    }`, { location: locationId, user: userId })
+  if (!existing.ok) return { success: false, error: existing.error }
+  if (existing.data.locationMemberships[0]) {
+    return setMember(locationId, existing.data.locationMemberships[0].id, { role: s(form, 'role') || 'front_desk', status: 'active' })
+  }
+  const d = { location: { connect: { id: locationId } }, user: { connect: { id: userId } }, role: s(form, 'role') || 'front_desk', status: 'active' }
   return write(`${M}($d: LocationMembershipCreateInput!) { createLocationMembership(data: $d) { id } }`, { d }, 'createLocationMembership', [`${ROOT}/${locationId}`])
 }
 
