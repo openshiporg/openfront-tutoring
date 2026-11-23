@@ -14,6 +14,7 @@ import { createInvoice } from '../lib/invoices'
 import { cancelSeat } from '../lib/booking'
 import { queueEmail } from '../lib/notify'
 import { getSettings, DAY, HOUR } from '../lib/settings'
+import { ROLE_TEMPLATES } from '../lib/roles'
 
 const gql = String.raw
 type Ctx = any
@@ -315,8 +316,14 @@ export const resolvers = {
         const d = args.data ?? {}
         email = app.email.toLowerCase()
         await lockKey(tx, `signup:${email}`)
-        const tutorRole = await tx.role.findFirst({ where: { isTutor: true, canManageSettings: false }, orderBy: { createdAt: 'asc' }, select: { id: true } })
-        if (!tutorRole) throw new CommandError('Create a Tutor role first (Settings → Roles).')
+        let tutorRole = await tx.role.findFirst({ where: { isTutor: true, canManageSettings: false }, orderBy: { createdAt: 'asc' }, select: { id: true } })
+        if (!tutorRole) {
+          // Older installations may predate onboarding. Provision the least-privilege default,
+          // without overwriting a merchant's existing role permissions.
+          const role = await tx.role.upsert({ where: { name: 'Tutor' }, create: { ...ROLE_TEMPLATES.Tutor }, update: {}, select: { id: true, isTutor: true, canManageSettings: true } })
+          if (!role.isTutor || role.canManageSettings) throw new CommandError('The existing Tutor role has incompatible permissions. Review its permissions in Settings before assigning it.')
+          tutorRole = role
+        }
         let user = await tx.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } }, select: { id: true, tutor: { select: { id: true } }, role: { select: { canAccessDashboard: true } } } })
         if (user?.tutor) throw new CommandError('This person is already a tutor.')
         if (user && user.role?.canAccessDashboard) throw new CommandError('This email belongs to a staff account. Use another email.')

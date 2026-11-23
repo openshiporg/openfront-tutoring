@@ -159,6 +159,9 @@ test('applications: staff add, move through stages, approve → Tutor (onboardin
     const r = (await gql(ctx, w.manager.id, MOVE, { a: app.id, s, n: `moved to ${s}` })).transitionApplication
     assert.equal(r.success, true, r.error)
   }
+  // Upgrade case: provisioning a login must not require a manually created Tutor role.
+  await prisma.user.updateMany({ where: { role: { name: 'Tutor' } }, data: { roleId: null } })
+  await prisma.role.deleteMany({ where: { name: 'Tutor' } })
   const ok = (await gql(ctx, w.manager.id, APPROVE, { a: app.id, d: { defaultPayRate: 3200, locationIds: [w.location.id] } })).approveApplication
   assert.equal(ok.success, true, ok.error)
   const tutor = await prisma.tutor.findUnique({ where: { id: ok.data.tutorId }, include: { user: { include: { role: true } }, subjects: true, locations: true } })
